@@ -1,0 +1,5 @@
+node_modules/
+factory/jobs/
+factory/inbox/done/
+factory/retro-proposals.md
+.factory/

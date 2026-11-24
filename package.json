@@ -1,0 +1,14 @@
+{
+  "name": "software-factory",
+  "version": "0.1.0",
+  "description": "An agentic software factory for Claude Code: GitHub issues in, reviewed pull requests out.",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test test/",
+    "dashboard": "node factory/dashboard/server.mjs",
+    "queue": "node factory/bin/job.mjs queue",
+    "collect": "node factory/bin/collect.mjs"
+  }
+}

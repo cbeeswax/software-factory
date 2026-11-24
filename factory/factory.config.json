@@ -1,0 +1,42 @@
+{
+  "label": "factory",
+  "baseBranch": null,
+  "concurrency": 3,
+  "maxRounds": 3,
+  "maxGateFailures": 5,
+  "planReview": "high-pain",
+  "setup": null,
+  "checks": [
+    { "name": "test", "cmd": "node --test test/" }
+  ],
+  "models": {
+    "intake": "fable",
+    "spec": "opus",
+    "builder": "opus",
+    "approver": "opus",
+    "reviewer": { "low": "sonnet", "medium": "sonnet", "high": "opus" }
+  },
+  "approval": {
+    "autoMerge": true,
+    "mergeMethod": "squash",
+    "auditRate": 0.2,
+    "escalateRisk": ["high"],
+    "escalatePaths": ["**/migrations/**", "**/billing/**", "**/auth/**", ".github/**", "factory/**", ".claude/**"]
+  },
+  "slop": {
+    "mode": "fail",
+    "maxDiffLines": 800,
+    "maxNewFileLines": 500,
+    "ignorePaths": ["factory/lib/core.mjs"]
+  },
+  "collect": {
+    "label": "factory:triage",
+    "autoQueue": false,
+    "maxPerRun": 5,
+    "sources": [
+      { "type": "inbox", "dir": "factory/inbox" }
+    ]
+  },
+  "pricing": {},
+  "dashboard": { "port": 4317 }
+}

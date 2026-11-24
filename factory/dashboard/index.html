@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Software Factory</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --panel: #ffffff; --line: #dfe3ea; --text: #1b2330; --muted: #5d6878;
+    --accent: #2f5fd0; --pass: #1f7a4a; --pass-bg: #e2f4ea; --fail: #b3421d; --fail-bg: #fbe7df;
+    --wait: #5d6878; --wait-bg: #eceff4; --human: #8a5a00; --human-bg: #fdf0cf;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12161d; --panel: #1b212b; --line: #2c3542; --text: #e6eaf1; --muted: #9aa6b8;
+      --accent: #8fb0ff; --pass: #7fd6a4; --pass-bg: #173626; --fail: #ffab8c; --fail-bg: #43231a;
+      --wait: #9aa6b8; --wait-bg: #262e3a; --human: #ffd27a; --human-bg: #3d3014;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 24px; padding: 16px 20px; border-bottom: 1px solid var(--line); }
+  h1 { font-size: 17px; margin: 0; }
+  .stat { color: var(--muted); } .stat b { color: var(--text); font-variant-numeric: tabular-nums; }
+  main { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(220px, 1fr); gap: 12px; padding: 16px 20px; overflow-x: auto; align-items: start; }
+  .col { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; min-height: 120px; }
+  .col h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0; padding: 10px 12px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; }
+  .col.human h2 { color: var(--human); }
+  .cards { padding: 8px; display: grid; gap: 8px; }
+  .card { text-align: left; width: 100%; font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 10px; cursor: pointer; }
+  .card:hover, .card:focus-visible { border-color: var(--accent); outline: none; }
+  .card .title { font-weight: 600; overflow-wrap: anywhere; }
+  .meta { color: var(--muted); font-size: 12px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .chip { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--wait-bg); color: var(--wait); }
+  .chip.pass { background: var(--pass-bg); color: var(--pass); } .chip.fail { background: var(--fail-bg); color: var(--fail); }
+  .chip.human { background: var(--human-bg); color: var(--human); }
+  .reason { margin-top: 6px; font-size: 12px; color: var(--human); overflow-wrap: anywhere; }
+  .empty { color: var(--muted); font-size: 12px; padding: 4px; }
+  dialog { width: min(920px, 94vw); max-height: 88vh; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); padding: 0; }
+  dialog::backdrop { background: rgba(0,0,0,.45); }
+  .dhead { display: flex; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+  .dhead h3 { margin: 0; font-size: 15px; overflow-wrap: anywhere; }
+  .dbody { display: grid; grid-template-columns: 190px 1fr; min-height: 300px; }
+  .files { border-right: 1px solid var(--line); padding: 8px; display: grid; gap: 2px; align-content: start; }
+  .files button, .close { font: inherit; color: inherit; background: none; border: 1px solid transparent; border-radius: 5px; padding: 5px 8px; text-align: left; cursor: pointer; }
+  .files button[aria-current="true"] { background: var(--wait-bg); border-color: var(--line); }
+  .close { border-color: var(--line); }
+  pre { margin: 0; padding: 14px 16px; white-space: pre-wrap; overflow-wrap: anywhere; font: 12.5px/1.5 ui-monospace, Consolas, monospace; overflow: auto; max-height: 68vh; }
+  a { color: var(--accent); }
+  @media (max-width: 640px) { .dbody { grid-template-columns: 1fr; } .files { border-right: 0; border-bottom: 1px solid var(--line); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Software Factory</h1>
+  <span class="stat" id="s-running"></span>
+  <span class="stat" id="s-merged"></span>
+  <span class="stat" id="s-rework"></span>
+  <span class="stat" id="s-updated"></span>
+</header>
+<main id="board"></main>
+<dialog id="dlg">
+  <div class="dhead"><h3 id="d-title"></h3><button class="close" id="d-close">Close</button></div>
+  <div class="dbody"><nav class="files" id="d-files" aria-label="Job files"></nav><pre id="d-text"></pre></div>
+</dialog>
+<script>
+const COLUMNS = [['intake','Intake'],['spec','Spec'],['build','Build'],['gate','Gate'],['review','Review'],['approve','Approve'],['needs-human','Needs human'],['merged','Merged'],['rejected','Rejected']];
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+const dur = (ms) => { const s = Math.round(ms / 1000); if (s < 60) return s + 's'; const m = Math.floor(s / 60); return m < 60 ? m + 'm' : Math.floor(m / 60) + 'h ' + (m % 60) + 'm'; };
+const dlg = document.getElementById('dlg');
+let openId = null;
+
+function card(job) {
+  const c = el('button', 'card');
+  c.append(el('div', 'title', (job.issue ? '#' + job.issue + ' ' : '') + job.title));
+  const total = Object.values(job.durations).reduce((a, b) => a + b, 0);
+  const cost = job.totals.cost === null ? (job.totals.tokens ? Math.round(job.totals.tokens / 1000) + 'k tokens' : '') : '$' + job.totals.cost.toFixed(2);
+  c.append(el('div', 'meta', ['round ' + job.round, dur(total), cost].filter(Boolean).join(' · ')));
+  const chips = el('div', 'chips');
+  if (job.risk) chips.append(el('span', 'chip' + (job.risk === 'high' ? ' fail' : ''), job.risk + ' risk'));
+  const verdicts = (job.verdicts || {})[job.round] || {};
+  for (const r of job.reviewers || []) {
+    const v = verdicts[r.name];
+    chips.append(el('span', 'chip' + (v ? ' ' + v.verdict : ''), r.name + (v ? ' ' + v.verdict : '')));
+  }
+  if (job.mergedBy) chips.append(el('span', 'chip ' + (job.mergedBy === 'human' ? 'human' : 'pass'), job.mergedBy === 'human' ? 'human approved' : 'auto-merged'));
+  c.append(chips);
+  if (job.stage === 'needs-human' && job.blockedReason) c.append(el('div', 'reason', job.blockedReason));
+  c.addEventListener('click', () => openJob(job));
+  return c;
+}
+
+async function showFile(job, name, btn) {
+  document.querySelectorAll('#d-files button').forEach((b) => b.removeAttribute('aria-current'));
+  if (btn) btn.setAttribute('aria-current', 'true');
+  const res = await fetch('/api/file?job=' + encodeURIComponent(job.id) + '&name=' + encodeURIComponent(name));
+  document.getElementById('d-text').textContent = await res.text();
+}
+
+function openJob(job) {
+  openId = job.id;
+  document.getElementById('d-title').textContent = job.id + ' — ' + job.stage;
+  const nav = document.getElementById('d-files');
+  nav.replaceChildren();
+  const pre = document.getElementById('d-text');
+  pre.textContent = job.files.length ? '' : 'No files yet.';
+  job.files.forEach((name, i) => {
+    const b = el('button', '', name);
+    b.addEventListener('click', () => showFile(job, name, b));
+    nav.append(b);
+    if (i === job.files.length - 1) showFile(job, name, b);
+  });
+  if (!dlg.open) dlg.showModal();
+}
+document.getElementById('d-close').addEventListener('click', () => dlg.close());
+dlg.addEventListener('close', () => { openId = null; });
+
+async function refresh() {
+  try {
+    const s = await (await fetch('/api/state')).json();
+    const board = document.getElementById('board');
+    board.replaceChildren(...COLUMNS.map(([stage, label]) => {
+      const jobs = s.jobs.filter((j) => j.stage === stage);
+      const col = el('section', 'col' + (stage === 'needs-human' ? ' human' : ''));
+      const h = el('h2'); h.append(el('span', '', label), el('span', '', String(jobs.length))); col.append(h);
+      const cards = el('div', 'cards');
+      if (jobs.length) jobs.forEach((j) => cards.append(card(j))); else cards.append(el('div', 'empty', 'Nothing here'));
+      col.append(cards);
+      return col;
+    }));
+    const running = s.jobs.filter((j) => !['merged', 'rejected', 'needs-human'].includes(j.stage)).length;
+    const set = (id, label, value) => { const e = document.getElementById(id); e.replaceChildren(document.createTextNode(label + ' '), el('b', '', value)); };
+    set('s-running', 'Running', running + ' of ' + s.concurrency);
+    set('s-merged', 'Merged', s.stats.merged + ' (' + s.stats.autoMerged + ' auto, ' + s.stats.humanMerged + ' human)');
+    set('s-rework', 'Rework rounds', String(s.stats.reworkRounds) + ', gate failures ' + s.stats.gateFailures);
+    set('s-updated', 'Updated', new Date().toLocaleTimeString());
+  } catch (e) {
+    document.getElementById('s-updated').textContent = 'Dashboard server is not responding';
+  }
+}
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>
