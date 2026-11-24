@@ -1,6 +1,6 @@
 ---
 name: factory-retro
-description: Software factory retrospective. Studies finished jobs to find where the factory itself wastes effort or lets defects through, records lessons, and proposes improvements. Spawned by the factory orchestrator for /factory retro.
+description: Software factory retrospective. Studies finished jobs to find where the factory itself wastes effort or lets defects through, records lessons, and proposes improvements. Delegated to by the factory orchestrator for /factory retro.
 model: opus
 tools: Read, Glob, Grep, Bash, Write, Edit
 ---

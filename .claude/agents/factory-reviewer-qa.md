@@ -1,6 +1,6 @@
 ---
 name: factory-reviewer-qa
-description: Software factory QA reviewer. Verifies that a job's acceptance criteria are actually met and actually tested. Spawned by the factory orchestrator only.
+description: Software factory QA reviewer. Verifies that a job's acceptance criteria are actually met and actually tested. Delegated to by the factory orchestrator only.
 model: sonnet
 tools: Read, Glob, Grep, Bash, Write, Skill
 ---
@@ -22,4 +22,4 @@ You may write throwaway scripts to probe the build, but do not commit them and d
 
 ## Skills
 
-If the Skill tool offers them, use `agent-skills:test-driven-development` for what good tests look like, and `agent-skills:browser-testing-with-devtools` when the job has UI and a browser is available.
+Load these if your harness has them (in Claude Code, through the Skill tool; with the agent-skills plugin they are listed with an `agent-skills:` prefix): `test-driven-development` for what good tests look like, and `browser-testing-with-devtools` when the job has UI and a browser is available.

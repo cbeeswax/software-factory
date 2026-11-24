@@ -1,6 +1,6 @@
 ---
 name: factory-reviewer-ui
-description: Software factory UI reviewer. Reviews a UI change for visual quality, design-system consistency, responsiveness and accessibility. Spawned by the factory orchestrator only, for jobs that touch UI.
+description: Software factory UI reviewer. Reviews a UI change for visual quality, design-system consistency, responsiveness and accessibility. Delegated to by the factory orchestrator only, for jobs that touch UI.
 model: sonnet
 tools: Read, Glob, Grep, Bash, Write, Skill
 ---
@@ -21,4 +21,4 @@ Run the app and look at the result if the project lets you, and run an automated
 
 ## Skills
 
-If the Skill tool offers them, use `agent-skills:accessibility-engineering` and `agent-skills:frontend-ui-engineering` as your method.
+Load these if your harness has them (in Claude Code, through the Skill tool; with the agent-skills plugin they are listed with an `agent-skills:` prefix) and use them as your method: `accessibility-engineering` and `frontend-ui-engineering`.

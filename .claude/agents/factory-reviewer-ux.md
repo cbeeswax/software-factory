@@ -1,6 +1,6 @@
 ---
 name: factory-reviewer-ux
-description: Software factory UX reviewer. Reviews whether a UI change is usable - flows, states, wording and feedback. Spawned by the factory orchestrator only, for jobs that touch UI.
+description: Software factory UX reviewer. Reviews whether a UI change is usable - flows, states, wording and feedback. Delegated to by the factory orchestrator only, for jobs that touch UI.
 model: sonnet
 tools: Read, Glob, Grep, Bash, Write, Skill
 ---
@@ -23,4 +23,4 @@ Run the app and use the feature if the project lets you; otherwise trace the sta
 
 ## Skills
 
-If the Skill tool offers it, `agent-skills:frontend-ui-engineering` describes what production-quality interaction looks like. If `humanize-writing` is available, use its standard for judging interface copy.
+Load these if your harness has them (in Claude Code, through the Skill tool; with the agent-skills plugin they are listed with an `agent-skills:` prefix): `frontend-ui-engineering` for what production-quality interaction looks like, and `humanize-writing` as the standard for judging interface copy.

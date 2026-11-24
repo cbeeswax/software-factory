@@ -1,9 +1,9 @@
 // Pure logic for the factory: no I/O, no git, no GitHub. Everything here is unit tested.
 
-export const STAGES = ['intake', 'spec', 'build', 'gate', 'review', 'approve', 'needs-human', 'merged', 'rejected'];
+export const STAGES = ['intake', 'spec', 'grill', 'build', 'gate', 'review', 'approve', 'needs-human', 'merged', 'rejected'];
 export const TERMINAL = ['merged', 'rejected'];
 export const RISKS = ['low', 'medium', 'high'];
-export const SURFACES = ['ui', 'api', 'data', 'auth', 'infra', 'deps', 'docs', 'logic'];
+export const SURFACES = ['ui', 'api', 'data', 'pii', 'auth', 'infra', 'deps', 'docs', 'logic'];
 
 export const DEFAULT_CONFIG = {
   label: 'factory',
@@ -16,9 +16,12 @@ export const DEFAULT_CONFIG = {
   setup: null,
   checks: [],
   planReview: 'high-pain',
+  specReview: true,
+  maxSpecRounds: 2,
   models: {
     intake: 'fable',
     spec: 'opus',
+    grill: 'opus',
     builder: 'opus',
     approver: 'opus',
     reviewer: { low: 'sonnet', medium: 'sonnet', high: 'opus' },
@@ -26,7 +29,9 @@ export const DEFAULT_CONFIG = {
   routing: {
     always: ['code', 'qa'],
     security: { minRisk: 'medium', surfaces: ['auth', 'data', 'api', 'infra', 'deps'] },
+    privacy: { surfaces: ['pii', 'data'] },
     ui: { surfaces: ['ui'], reviewers: ['ux', 'ui'] },
+    doubt: { minRisk: 'high' },
   },
   approval: {
     autoMerge: true,
@@ -44,6 +49,24 @@ export const DEFAULT_CONFIG = {
     testPaths: ['**/*.test.*', '**/*.spec.*', '**/test/**', '**/tests/**', '**/__tests__/**', '**/test_*.py', '**/*_test.go'],
   },
   collect: { label: 'factory:triage', autoQueue: false, maxPerRun: 5, sources: [] },
+  skills: {
+    autoInstall: true,
+    installer: 'npx -y skills add',
+    sources: [
+      {
+        source: 'addyosmani/agent-skills',
+        claudePlugin: 'agent-skills@addy-agent-skills',
+        skills: [
+          'spec-driven-development', 'planning-and-task-breakdown', 'interview-me', 'doubt-driven-development',
+          'incremental-implementation', 'test-driven-development', 'source-driven-development',
+          'debugging-and-error-recovery', 'frontend-ui-engineering', 'git-workflow-and-versioning',
+          'code-review-and-quality', 'code-simplification', 'security-and-hardening',
+          'accessibility-engineering', 'browser-testing-with-devtools', 'shipping-and-launch',
+        ],
+      },
+      { source: 'mattpocock/skills', skills: ['grilling'] },
+    ],
+  },
   pricing: {},
   dashboard: { port: 4317 },
 };
@@ -90,7 +113,9 @@ export function route({ risk, surfaces = [] }, cfg = DEFAULT_CONFIG) {
   const names = [...r.always];
   const riskAtLeast = RISKS.indexOf(risk) >= RISKS.indexOf(r.security.minRisk);
   if (riskAtLeast || surfaces.some((s) => r.security.surfaces.includes(s))) names.push('security');
+  if (surfaces.some((s) => r.privacy.surfaces.includes(s))) names.push('privacy');
   if (surfaces.some((s) => r.ui.surfaces.includes(s))) names.push(...r.ui.reviewers);
+  if (RISKS.indexOf(risk) >= RISKS.indexOf(r.doubt.minRisk)) names.push('doubt');
   const model = cfg.models.reviewer[risk] || cfg.models.reviewer.medium;
   return [...new Set(names)].map((name) => ({ name, model }));
 }
@@ -100,6 +125,35 @@ export function needsPlanReview({ risk, pain }, cfg = DEFAULT_CONFIG) {
   if (cfg.planReview === 'always') return true;
   if (cfg.planReview === 'never') return false;
   return pain === 'high' || risk === 'high';
+}
+
+/**
+ * The spec critic has reported. `clear` moves on, `revise` sends the gaps back to the spec
+ * writer (a limited number of times), `ask` stops for answers only a human can give.
+ */
+export function afterGrill(job, result, cfg = DEFAULT_CONFIG) {
+  if (result === 'clear') return needsPlanReview(job, cfg) && !job.planApproved ? { stage: 'needs-human', waitingFor: 'plan' } : { stage: 'build' };
+  if (result === 'ask') return { stage: 'needs-human', waitingFor: 'answers' };
+  if ((job.specRound || 1) >= cfg.maxSpecRounds) return { stage: 'needs-human', waitingFor: 'answers', exhausted: true };
+  return { stage: 'spec', specRound: (job.specRound || 1) + 1 };
+}
+
+/** Which configured skills are not installed, grouped by the source that provides them. */
+export function missingSkills(sources, present) {
+  const have = new Set(present);
+  return sources
+    .map((s) => ({ source: s.source, skills: s.skills.filter((n) => !have.has(n)) }))
+    .filter((s) => s.skills.length);
+}
+
+const SAFE_SOURCE = /^[A-Za-z0-9._@:/-]+$/;
+const SAFE_SKILL = /^[A-Za-z0-9._-]+$/;
+
+/** The shell command that installs skills into the project, where every harness and teammate finds them. */
+export function installCommand(installer, source, skills) {
+  if (!SAFE_SOURCE.test(source)) throw new Error(`Unsafe skill source: ${source}`);
+  for (const s of skills) if (!SAFE_SKILL.test(s)) throw new Error(`Unsafe skill name: ${s}`);
+  return `${installer} ${source} --skill ${skills.join(' ')} -a claude-code --copy -y`;
 }
 
 /** Once every reviewer in the round has reported: where does the job go? */

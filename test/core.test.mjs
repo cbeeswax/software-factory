@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  DEFAULT_CONFIG, afterReviews, computeStats, decideApproval, globToRegExp, mergeConfig, needsPlanReview,
+  DEFAULT_CONFIG, afterGrill, afterReviews, installCommand, missingSkills, computeStats, decideApproval, globToRegExp, mergeConfig, needsPlanReview,
   parseDiff, route, scanDiff, scanSecrets, slugify,
 } from '../factory/lib/core.mjs';
 
@@ -36,6 +36,9 @@ test('routing: reviewers depend on risk and surfaces', () => {
   assert.deepEqual(names({ risk: 'low', surfaces: ['ui'] }), ['code', 'qa', 'ux', 'ui']);
   assert.deepEqual(names({ risk: 'medium', surfaces: ['logic'] }), ['code', 'qa', 'security']);
   assert.deepEqual(names({ risk: 'low', surfaces: ['auth'] }), ['code', 'qa', 'security']);
+  assert.deepEqual(names({ risk: 'low', surfaces: ['pii'] }), ['code', 'qa', 'privacy']);
+  assert.deepEqual(names({ risk: 'low', surfaces: ['data'] }), ['code', 'qa', 'security', 'privacy']);
+  assert.deepEqual(names({ risk: 'high', surfaces: ['ui'] }), ['code', 'qa', 'security', 'ux', 'ui', 'doubt']);
   assert.equal(route({ risk: 'high', surfaces: [] }, cfg)[0].model, 'opus');
   assert.equal(route({ risk: 'low', surfaces: [] }, cfg)[0].model, 'sonnet');
 });
@@ -46,6 +49,25 @@ test('plan review is required for high pain or high risk', () => {
   assert.equal(needsPlanReview({ risk: 'high', pain: 'low' }, cfg), true);
   assert.equal(needsPlanReview({ risk: 'low', pain: 'low' }, mergeConfig(cfg, { planReview: 'always' })), true);
   assert.equal(needsPlanReview({ risk: 'high', pain: 'high' }, mergeConfig(cfg, { planReview: 'never' })), false);
+});
+
+test('afterGrill: clear, revise, ask, and the limit on automatic revisions', () => {
+  const job = { risk: 'low', pain: 'low', specRound: 1 };
+  assert.deepEqual(afterGrill(job, 'clear', cfg), { stage: 'build' });
+  assert.deepEqual(afterGrill({ ...job, pain: 'high' }, 'clear', cfg), { stage: 'needs-human', waitingFor: 'plan' });
+  assert.deepEqual(afterGrill({ ...job, pain: 'high', planApproved: true }, 'clear', cfg), { stage: 'build' });
+  assert.deepEqual(afterGrill(job, 'revise', cfg), { stage: 'spec', specRound: 2 });
+  assert.equal(afterGrill({ ...job, specRound: 2 }, 'revise', cfg).exhausted, true);
+  assert.deepEqual(afterGrill(job, 'ask', cfg), { stage: 'needs-human', waitingFor: 'answers' });
+});
+
+test('skills: finds what is missing and builds a safe install command', () => {
+  const sources = [{ source: 'a/b', skills: ['one', 'two'] }, { source: 'c/d', skills: ['three'] }];
+  assert.deepEqual(missingSkills(sources, ['one', 'three']), [{ source: 'a/b', skills: ['two'] }]);
+  assert.deepEqual(missingSkills(sources, ['one', 'two', 'three']), []);
+  assert.equal(installCommand('npx -y skills add', 'a/b', ['one', 'two']), 'npx -y skills add a/b --skill one two -a claude-code --copy -y');
+  assert.throws(() => installCommand('npx -y skills add', 'a/b; rm -rf .', ['one']), /Unsafe skill source/);
+  assert.throws(() => installCommand('npx -y skills add', 'a/b', ['one && evil']), /Unsafe skill name/);
 });
 
 test('afterReviews: waits, passes, reworks, then gives up', () => {

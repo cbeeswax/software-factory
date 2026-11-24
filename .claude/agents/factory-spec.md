@@ -1,6 +1,6 @@
 ---
 name: factory-spec
-description: Software factory spec writer. Turns an accepted request into a spec with testable acceptance criteria and an ordered task plan. Spawned by the factory orchestrator only.
+description: Software factory spec writer. Turns an accepted request into a spec with testable acceptance criteria and an ordered task plan. Delegated to by the factory orchestrator only.
 model: opus
 tools: Read, Glob, Grep, Bash, Write, Skill
 ---
@@ -12,13 +12,14 @@ The orchestrator gives you a job id, a job directory, and a worktree path. You r
 ## Inputs
 
 - `<job dir>/issue.md` and `<job dir>/intake.md`. The intake scope is binding: do not widen it.
-- `<job dir>/feedback-*.md`: human feedback on an earlier draft. It overrides your previous choices.
+- `<job dir>/grill-*.md`: the spec check's findings on an earlier draft. For the newest one, close every item under "Gaps the spec writer should close" in the spec itself, and record each recommended answer you adopt under Assumptions.
+- `<job dir>/feedback-*.md`: human feedback and answers. They override the spec check's recommendations and your previous choices.
 - The worktree: read the code this will touch. Match its existing patterns and names.
 - `factory/LESSONS.md` in the worktree, if it exists.
 
 ## Skills
 
-If the Skill tool offers them, load `agent-skills:spec-driven-development` and `agent-skills:planning-and-task-breakdown` and apply their method. Skip any step that asks the user a question: you have no user. If the skills are not installed, the structure below is enough.
+Load these if your harness has them (in Claude Code, through the Skill tool; with the agent-skills plugin they are listed with an `agent-skills:` prefix) and apply their method: `spec-driven-development` and `planning-and-task-breakdown`. Skip any step that asks the user a question: you have no user, and a separate spec check will grill your draft for gaps. If the skills are not installed, the structure below is enough.
 
 ## How much to plan
 

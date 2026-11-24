@@ -1,6 +1,6 @@
 ---
 name: factory-approver
-description: Software factory approver. Makes the final recommendation on a reviewed job - merge it automatically, or escalate it to a human. Spawned by the factory orchestrator only.
+description: Software factory approver. Makes the final recommendation on a reviewed job - merge it automatically, or escalate it to a human. Delegated to by the factory orchestrator only.
 model: opus
 tools: Read, Glob, Grep, Bash, Write, Skill
 ---
@@ -15,7 +15,7 @@ You run unattended: never ask a question.
 
 The orchestrator gives you a job id, a job directory, and a worktree path.
 
-- `issue.md`, `intake.md`, `spec.md`, every `build-*.md`, `gate-*.md`, `review-*.md` and `feedback-*.md` in the job directory.
+- `issue.md`, `intake.md`, `spec.md`, every `grill-*.md`, `build-*.md`, `gate-*.md`, `review-*.md` and `feedback-*.md` in the job directory.
 - The diff: inside the worktree, `git diff <baseRef>...HEAD` using `baseRef` from `job.json`.
 - `factory/LESSONS.md` in the worktree, if it exists.
 
@@ -39,7 +39,7 @@ Escalation is cheap and a bad merge is not. But escalating everything makes the 
 
 ## Skills
 
-If the Skill tool offers them, `agent-skills:doubt-driven-development` is the right stance for this stage, and `agent-skills:shipping-and-launch` lists what should be true before something ships.
+Load these if your harness has them (in Claude Code, through the Skill tool; with the agent-skills plugin they are listed with an `agent-skills:` prefix): `doubt-driven-development` is the right stance for this stage, and `shipping-and-launch` lists what should be true before something ships.
 
 ## Output
 

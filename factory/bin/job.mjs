@@ -5,7 +5,7 @@
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import {
-  RISKS, SURFACES, TERMINAL, afterReviews, computeStats, decideApproval, formatDuration, needsPlanReview,
+  RISKS, SURFACES, TERMINAL, afterGrill, afterReviews, computeStats, decideApproval, formatDuration, needsPlanReview,
   route, scanDiff, slugify, stageDurations, usageTotals,
 } from '../lib/core.mjs';
 import {
@@ -68,9 +68,10 @@ function cleanupWorktree(job) {
   gitTry(['branch', '-D', job.branch]);
 }
 
-function blockJob(job, reason) {
+function blockJob(job, reason, waitingFor = null) {
   transition(job, 'needs-human', reason);
   job.blockedReason = reason;
+  job.waitingFor = waitingFor;
   comment(job, `needs a human. ${reason}`);
 }
 
@@ -80,22 +81,24 @@ function nextHint(job) {
   const ctx = `Job dir: ${dir} | Worktree: ${job.worktree} | Round: ${job.round}`;
   switch (job.stage) {
     case 'intake':
-      return `NEXT: spawn agent "factory-intake" (model ${cfg.models.intake}). ${ctx}\n      then: ${SELF} intake ${job.id} --decision <accept|reject|needs-info> --risk <low|medium|high> --pain <low|high> --surfaces <csv of ${SURFACES.join(',')}> --reason "<one line>"`;
+      return `NEXT: delegate to agent "factory-intake" (model ${cfg.models.intake}). ${ctx}\n      then: ${SELF} intake ${job.id} --decision <accept|reject|needs-info> --risk <low|medium|high> --pain <low|high> --surfaces <csv of ${SURFACES.join(',')}> --reason "<one line>"`;
     case 'spec':
-      return `NEXT: spawn agent "factory-spec" (model ${cfg.models.spec}). ${ctx}\n      then: ${SELF} spec-done ${job.id}`;
+      return `NEXT: delegate to agent "factory-spec" (model ${cfg.models.spec}). ${ctx} | Spec round: ${job.specRound}\n      then: ${SELF} spec-done ${job.id}`;
+    case 'grill':
+      return `NEXT: delegate to agent "factory-grill" (model ${cfg.models.grill}). ${ctx} | Spec round: ${job.specRound}\n      then: ${SELF} grill ${job.id} --result <clear|revise|ask> --summary "<one line>"`;
     case 'build':
-      return `NEXT: spawn agent "factory-builder" (model ${cfg.models.builder}). ${ctx}\n      then: ${SELF} gate ${job.id}`;
+      return `NEXT: delegate to agent "factory-builder" (model ${cfg.models.builder}). ${ctx}\n      then: ${SELF} gate ${job.id}`;
     case 'gate':
       return `NEXT: ${SELF} gate ${job.id}   (a previous gate run was interrupted)`;
     case 'review': {
       const pending = afterReviews(job, cfg).pending || [];
       const list = job.reviewers.filter((r) => pending.includes(r.name)).map((r) => `"factory-reviewer-${r.name}" (model ${r.model})`).join(', ');
-      return `NEXT: spawn these reviewer agents in parallel: ${list}. ${ctx}\n      after each: ${SELF} verdict ${job.id} <reviewer> <pass|fail> --summary "<one line>"`;
+      return `NEXT: delegate to these reviewer agents, in parallel if your harness can: ${list}. ${ctx}\n      after each: ${SELF} verdict ${job.id} <reviewer> <pass|fail> --summary "<one line>"`;
     }
     case 'approve':
-      return `NEXT: spawn agent "factory-approver" (model ${cfg.models.approver}). ${ctx}\n      then: ${SELF} approve ${job.id} --decision <merge|escalate> --reason "<one line>"`;
+      return `NEXT: delegate to agent "factory-approver" (model ${cfg.models.approver}). ${ctx}\n      then: ${SELF} approve ${job.id} --decision <merge|escalate> --reason "<one line>"`;
     case 'needs-human':
-      return `WAITING ON HUMAN: ${job.blockedReason || 'no reason recorded'}\n      human says go:      ${SELF} approve-human ${job.id}\n      human wants changes: ${SELF} feedback ${job.id} "<what they said>"\n      human says drop it:  ${SELF} reject ${job.id} --reason "<why>"`;
+      return `WAITING ON HUMAN (${job.waitingFor || 'guidance'}): ${job.blockedReason || 'no reason recorded'}\n      human says go:      ${SELF} approve-human ${job.id}\n      human wants changes: ${SELF} feedback ${job.id} "<what they said>"\n      human says drop it:  ${SELF} reject ${job.id} --reason "<why>"`;
     default:
       return `DONE: job is ${job.stage}.`;
   }
@@ -163,7 +166,7 @@ commands.create = ({ _, flags }) => {
   const now = new Date().toISOString();
   const job = {
     id, issue, url, title, source: issue ? 'issue' : 'local', branch, base, baseRef, worktree,
-    stage: 'intake', prevStage: null, round: 1, risk: null, pain: null, surfaces: [], reviewers: [],
+    stage: 'intake', prevStage: null, waitingFor: null, round: 1, specRound: 1, risk: null, pain: null, surfaces: [], reviewers: [],
     verdicts: {}, gateFailures: 0, usage: [], pr: null, createdAt: now, updatedAt: now,
     history: [{ stage: 'intake', at: now }],
   };
@@ -192,7 +195,7 @@ commands.intake = ({ _, flags }) => {
     return report(job, 'Rejected.');
   }
   if (decision === 'needs-info') {
-    blockJob(job, `Intake needs more information: ${reason || 'see intake.md'}`);
+    blockJob(job, `Intake needs more information: ${reason || 'see intake.md'}`, 'answers');
     return report(job, 'Blocked for more information.');
   }
   if (!RISKS.includes(risk)) fail(`--risk must be one of ${RISKS.join(', ')}`);
@@ -210,12 +213,43 @@ commands['spec-done'] = ({ _ }) => {
   const job = loadJob(_[0]);
   requireStage(job, 'spec');
   if (!existsSync(join(jobDir(job.id), 'spec.md'))) fail(`spec.md is missing from ${jobDir(job.id)}. The spec agent must write it.`);
+  if (cfg.specReview) {
+    transition(job, 'grill');
+    return report(job, 'Spec written. It goes to the spec check next.');
+  }
+  specAccepted(job, 'Spec written.');
+};
+
+const PLAN_REASON = 'Plan review: read spec.md and approve it, or give feedback, before any code is written.';
+
+function specAccepted(job, headline) {
   if (job.planReview && !job.planApproved) {
-    blockJob(job, 'Plan review: read spec.md and approve it, or give feedback, before any code is written.');
-    return report(job, 'Spec written. Waiting for a human to approve the plan.');
+    blockJob(job, PLAN_REASON, 'plan');
+    return report(job, headline + ' Waiting for a human to approve the plan.');
   }
   transition(job, 'build');
-  report(job, 'Spec written.');
+  report(job, headline);
+}
+
+commands.grill = ({ _, flags }) => {
+  const job = loadJob(_[0]);
+  requireStage(job, 'grill');
+  if (!['clear', 'revise', 'ask'].includes(flags.result)) fail('--result must be clear, revise or ask');
+  const file = 'grill-' + job.specRound + '.md';
+  if (!existsSync(join(jobDir(job.id), file))) fail(file + ' is missing from ' + jobDir(job.id) + '. The spec check agent must write it.');
+  const next = afterGrill(job, flags.result, cfg);
+  if (next.stage === 'spec') {
+    job.specRound = next.specRound;
+    transition(job, 'spec', 'spec has gaps: see ' + file);
+    return report(job, 'The spec has gaps the spec writer can close. It must address ' + file + '.');
+  }
+  if (next.waitingFor === 'answers') {
+    const lead = next.exhausted ? 'The spec still has gaps after ' + job.specRound + ' attempts.' : 'The spec has open questions only a person can answer.';
+    blockJob(job, lead + ' Answer the questions in ' + file + ', or approve to accept its recommended answers.', 'answers');
+    comment(job, 'the spec has open questions for a human. See ' + file + ' in the job folder.');
+    return report(job, 'Spec check found questions for a human.');
+  }
+  specAccepted(job, 'Spec check passed.');
 };
 
 commands.gate = ({ _ }) => {
@@ -312,7 +346,7 @@ commands.verdict = ({ _, flags }) => {
   const summary = Object.entries(job.verdicts[job.round]).map(([n, v]) => `${n} ${v.verdict}`).join(', ');
   if (result.stage === 'approve') {
     try { openPr(job); } catch (e) {
-      blockJob(job, `All reviews passed but the pull request could not be opened: ${e.message}`);
+      blockJob(job, `All reviews passed but the pull request could not be opened: ${e.message}`, 'approval');
       return report(job, 'Could not open the pull request.');
     }
     transition(job, 'approve');
@@ -351,7 +385,7 @@ function doMerge(job, by) {
 
 function tryMerge(job, by) {
   try { doMerge(job, by); return report(job, `Merged (${by}).`); } catch (e) {
-    blockJob(job, `Merge failed: ${String(e.stderr || e.message).trim()}`);
+    blockJob(job, `Merge failed: ${String(e.stderr || e.message).trim()}`, 'approval');
     job.prevStage = 'approve';
     return report(job, 'Merge failed.');
   }
@@ -365,20 +399,32 @@ commands.approve = ({ _, flags }) => {
   job.approval = { recommendation: flags.decision, reason: flags.reason === true ? '' : flags.reason || '', escalations: verdict.reasons, at: new Date().toISOString() };
   if (verdict.merge) return tryMerge(job, 'factory');
   const why = [...verdict.reasons, job.approval.reason].filter(Boolean).join('. ');
-  blockJob(job, `Approval needed: ${why}.${job.pr ? ` Review ${job.pr.url}` : ''}`);
+  blockJob(job, `Approval needed: ${why}.${job.pr ? ` Review ${job.pr.url}` : ''}`, 'approval');
   report(job, 'Escalated to a human.');
 };
 
 commands['approve-human'] = ({ _ }) => {
   const job = loadJob(_[0]);
   requireStage(job, 'needs-human');
-  if (job.prevStage === 'spec') {
+  const waiting = job.waitingFor;
+  if (waiting === 'plan') {
     job.planApproved = true;
+    job.blockedReason = null;
+    job.waitingFor = null;
     transition(job, 'build', 'plan approved by human');
     comment(job, 'plan approved by a human. Building.');
     return report(job, 'Plan approved.');
   }
-  if (job.prevStage === 'approve') return tryMerge(job, 'human');
+  if (waiting === 'answers' && job.prevStage === 'grill') {
+    const n = jobFiles(job.id).filter((f) => f.startsWith('feedback-')).length + 1;
+    writeJobFile(job, 'feedback-' + n + '.md', '# Human feedback ' + n + '\n\nThe human accepted every recommended answer in grill-' + job.specRound + '.md. Write them into the spec as decisions.');
+    job.specRound += 1;
+    job.blockedReason = null;
+    job.waitingFor = null;
+    transition(job, 'spec', 'human accepted the recommended answers');
+    return report(job, 'Recommended answers accepted. The spec writer will fold them in.');
+  }
+  if (waiting === 'approval' && job.prevStage === 'approve') return tryMerge(job, 'human');
   fail(`This job was blocked during "${job.prevStage}", so there is nothing to approve. Reply with: ${SELF} feedback ${job.id} "<guidance>"`);
 };
 
@@ -391,11 +437,13 @@ commands.feedback = ({ _, flags }) => {
   writeJobFile(job, `feedback-${n}.md`, `# Human feedback ${n}\n\nGiven while the job was in: ${job.stage}${job.blockedReason ? ` (${job.blockedReason})` : ''}\n\n${text}`);
   if (job.stage !== 'needs-human') return report(job, `Feedback recorded as feedback-${n}.md.`);
   const prev = job.prevStage;
-  const to = flags.to || (prev === 'approve' || prev === 'review' || prev === 'gate' ? 'build' : prev);
+  const to = flags.to || (prev === 'approve' || prev === 'review' || prev === 'gate' ? 'build' : prev === 'grill' ? 'spec' : prev);
   if (!['intake', 'spec', 'build'].includes(to)) fail(`Cannot resume into "${to}". Use --to intake, spec or build.`);
   if (to === 'build' && (prev === 'approve' || prev === 'review')) job.round += 1;
   if (to === 'build') job.gateFailures = 0;
+  if (to === 'spec' && existsSync(join(jobDir(job.id), 'grill-' + job.specRound + '.md'))) job.specRound += 1;
   job.blockedReason = null;
+  job.waitingFor = null;
   transition(job, to, `human feedback ${n}`);
   report(job, `Feedback recorded as feedback-${n}.md. Job resumed.`);
 };
@@ -466,11 +514,12 @@ commands.help = () => say(`Factory job control. The only writer of factory/jobs/
   queue                                   What is running, what is waiting, what to start
   create <issue#> | --title "..."         Start a job from a GitHub issue, or a local job
   intake <job> --decision --risk --pain --surfaces --reason
-  spec-done <job>                         Spec is written (may stop for human plan review)
+  spec-done <job>                         Spec is written; it goes to the spec check
+  grill <job> --result <clear|revise|ask> Record the spec check (may stop for answers or plan review)
   gate <job>                              Run the deterministic checks on the build
   verdict <job> <reviewer> <pass|fail>    Record one reviewer's verdict
   approve <job> --decision <merge|escalate> --reason
-  approve-human <job>                     A human approved the plan, or the merge
+  approve-human <job>                     A human approved the plan, the recommended answers, or the merge
   feedback <job> "<text>" [--to stage]    Record human guidance and resume a blocked job
   block <job> --reason "..."              Stop and wait for a human
   reject <job> --reason "..."             Drop the job

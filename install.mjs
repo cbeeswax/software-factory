@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Installs the factory into another project.
-//   node install.mjs <path-to-your-project> [--no-labels] [--no-hook]
+//   node install.mjs <path-to-your-project> [--no-labels] [--no-hook] [--no-skills]
+// Sets the project up for both Claude Code and GitHub Copilot.
 // Safe to run again to upgrade: it never overwrites your factory.config.json or LESSONS.md.
 import { execFileSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
@@ -12,7 +13,7 @@ const args = process.argv.slice(2);
 const target = resolve(args.find((a) => !a.startsWith('--')) || '');
 const flags = new Set(args.filter((a) => a.startsWith('--')));
 
-if (!args.find((a) => !a.startsWith('--'))) { console.error('Usage: node install.mjs <path-to-your-project> [--no-labels] [--no-hook]'); process.exit(1); }
+if (!args.find((a) => !a.startsWith('--'))) { console.error('Usage: node install.mjs <path-to-your-project> [--no-labels] [--no-hook] [--no-skills]'); process.exit(1); }
 if (!existsSync(join(target, '.git'))) { console.error(`${target} is not the root of a git repository.`); process.exit(1); }
 if (target === src) { console.error('That is the factory repository itself.'); process.exit(1); }
 
@@ -22,6 +23,8 @@ const copy = (rel) => { cpSync(join(src, rel), join(target, rel), { recursive: t
 copy('.claude/skills/factory');
 mkdirSync(join(target, '.claude/agents'), { recursive: true });
 for (const f of readdirSync(join(src, '.claude/agents')).filter((n) => n.startsWith('factory-'))) copy(`.claude/agents/${f}`);
+mkdirSync(join(target, '.github/agents'), { recursive: true });
+for (const f of readdirSync(join(src, '.github/agents')).filter((n) => n.startsWith('factory-'))) copy(`.github/agents/${f}`);
 for (const rel of ['factory/bin', 'factory/lib', 'factory/dashboard', 'factory/REVIEW_CONTRACT.md']) copy(rel);
 
 // Files the project owns once installed: create them, never overwrite them.
@@ -63,10 +66,14 @@ This project has a software factory in \`factory/\`, run with the \`/factory\` s
 - \`node factory/bin/job.mjs\` is the only writer of job state. Never edit \`factory/jobs/*/job.json\`.
 - Do not change \`factory/\` or \`.claude/agents/factory-*.md\` as part of feature work. Changes to the factory are reviewed by a human.
 - Checks the factory enforces are in \`factory/factory.config.json\`. Run them with \`node factory/bin/checks.mjs\`.
+- The stage agents live in \`.claude/agents/factory-*.md\`. The copies in \`.github/agents\` are generated from them.
 `;
-const doc = ['CLAUDE.md', 'AGENTS.md'].map((f) => join(target, f)).find(existsSync) || join(target, 'CLAUDE.md');
-const docText = existsSync(doc) ? readFileSync(doc, 'utf8') : '';
-if (!docText.includes('## Software factory')) { writeFileSync(doc, `${docText.trimEnd()}\n${section}`.trimStart()); done.push(doc.slice(target.length + 1)); }
+// CLAUDE.md is read by Claude Code; AGENTS.md by Copilot and most other agents. Both get the section.
+for (const name of ['CLAUDE.md', 'AGENTS.md']) {
+  const doc = join(target, name);
+  const docText = existsSync(doc) ? readFileSync(doc, 'utf8') : '';
+  if (!docText.includes('## Software factory')) { writeFileSync(doc, `${docText.trimEnd()}\n${section}`.trimStart()); done.push(name); }
+}
 
 let labels = 'skipped';
 if (!flags.has('--no-labels')) {
@@ -78,15 +85,26 @@ if (!flags.has('--no-labels')) {
   } catch { labels = 'could not create them (is gh logged in, and does the project have a GitHub remote?)'; }
 }
 
+let skills = 'skipped';
+if (!flags.has('--no-skills')) {
+  try {
+    const r = JSON.parse(execFileSync(process.execPath, [join(target, 'factory/bin/skills.mjs'), 'ensure'], { cwd: target, encoding: 'utf8', env: { ...process.env, FACTORY_ROOT: target } }));
+    skills = r.installed.length ? `installed ${r.installed.flatMap((i) => i.skills).length} into .claude/skills` : 'all present';
+  } catch (e) {
+    skills = 'some could not be installed; run `node factory/bin/skills.mjs ensure` in the project to see why';
+  }
+}
+
 console.log(`Installed the software factory into ${target}
 
 Wrote:
 ${done.map((d) => `  ${d}`).join('\n')}
 GitHub labels: ${labels}
+Agent skills: ${skills}
 
 Next:
   1. Open factory/factory.config.json and set "checks" to the commands that prove a build is good
      (lint, typecheck, tests, build). With none set, the factory guesses from package.json and similar.
   2. Commit the new files.
-  3. Add the "factory" label to an issue, start Claude Code in the project, and type: /factory run
+  3. Add the "factory" label to an issue, start Claude Code or GitHub Copilot in the project, and type: /factory run
 `);

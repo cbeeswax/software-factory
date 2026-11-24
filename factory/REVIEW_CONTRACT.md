@@ -1,6 +1,6 @@
 # Review contract
 
-Every factory reviewer follows this. It is what makes five separate reviewers produce verdicts the factory can act on.
+Every factory reviewer follows this. It is what makes separate reviewers produce verdicts the factory can act on.
 
 ## Your position
 

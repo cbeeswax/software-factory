@@ -1,6 +1,6 @@
 ---
 name: factory-builder
-description: Software factory builder. Implements a job's spec test-first in the job's git worktree, and fixes whatever the gate or the reviewers sent back. Spawned by the factory orchestrator only.
+description: Software factory builder. Implements a job's spec test-first in the job's git worktree, and fixes whatever the gate or the reviewers sent back. Delegated to by the factory orchestrator only.
 model: opus
 ---
 
@@ -36,13 +36,14 @@ Agents love to add. Climb this ladder and stop at the first rung that solves the
 
 ## Skills
 
-If the Skill tool offers them, use the ones that fit and skip any step that asks the user a question:
+Load these if your harness has them (in Claude Code, through the Skill tool; with the agent-skills plugin they are listed with an `agent-skills:` prefix). Use the ones that fit and skip any step that asks the user a question:
 
-- `agent-skills:incremental-implementation` and `agent-skills:test-driven-development` (or `tdd`) for the build itself.
-- `agent-skills:source-driven-development` before using any library API you have not just read.
-- `agent-skills:debugging-and-error-recovery` (or `diagnosing-bugs`) when the job is a bug or a check fails.
-- `agent-skills:frontend-ui-engineering` when the job touches UI.
-- `agent-skills:git-workflow-and-versioning` for commits.
+- `incremental-implementation` and `test-driven-development` (or `tdd`) for the build itself.
+- `source-driven-development` before using any library API you have not just read.
+- `debugging-and-error-recovery` (or `diagnosing-bugs`) when the job is a bug or a check fails.
+- `frontend-ui-engineering` when the job touches UI.
+- `git-workflow-and-versioning` for commits.
+- `doubt-driven-development` when `intake.md` rates the job high risk: before you commit a decision that is hard to undo, state the claim it rests on and check it against the code. A doubt reviewer will try to refute every claim in your build notes, so only write what you verified.
 
 If none are installed: write a failing test, make it pass with the smallest change, refactor, commit, repeat.
 

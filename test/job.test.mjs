@@ -51,6 +51,13 @@ function toBuild(r, title, intake = ['--risk', 'low', '--surfaces', 'logic']) {
   return id;
 }
 
+// The spec is written; pass the spec check so the job moves on.
+function specDone(r, id, result = 'clear') {
+  if (r.state(id).stage === 'spec') assert.equal(r.job('spec-done', id).code, 0);
+  r.jobFile(id, `grill-${r.state(id).specRound}.md`, 'checked\n');
+  return r.job('grill', id, '--result', result, '--summary', 'checked');
+}
+
 function passAllReviews(r, id) {
   const { round, reviewers } = r.state(id);
   for (const rv of reviewers) {
@@ -66,6 +73,8 @@ test('happy path: a low-risk local job is built, gated, reviewed and auto-merged
     assert.match(id, /^L1-add-hello-file$/);
     assert.deepEqual(r.state(id).reviewers.map((x) => x.name), ['code', 'qa']);
     assert.equal(r.job('spec-done', id).code, 0);
+    assert.equal(r.state(id).stage, 'grill');
+    assert.match(specDone(r, id).out, /Spec check passed/);
     assert.equal(r.state(id).stage, 'build');
 
     r.commit(id, 'hello.txt', 'hello\n');
@@ -82,7 +91,7 @@ test('happy path: a low-risk local job is built, gated, reviewed and auto-merged
     assert.equal(s.mergedBy, 'factory');
     assert.equal(readFileSync(join(r.root, 'hello.txt'), 'utf8'), 'hello\n');
     assert.equal(existsSync(s.worktree), false, 'worktree is removed after merge');
-    assert.deepEqual(s.history.map((h) => h.stage), ['intake', 'spec', 'build', 'gate', 'review', 'approve', 'merged']);
+    assert.deepEqual(s.history.map((h) => h.stage), ['intake', 'spec', 'grill', 'build', 'gate', 'review', 'approve', 'merged']);
   } finally { r.cleanup(); }
 });
 
@@ -90,7 +99,7 @@ test('the gate sends failing builds back, and blocks after too many failures', (
   const r = makeRepo({ maxGateFailures: 1 });
   try {
     const id = toBuild(r, 'Break things');
-    r.job('spec-done', id);
+    specDone(r, id);
     assert.match(r.job('gate', id).out, /Gate FAILED/, 'no commits yet');
     assert.equal(r.state(id).stage, 'build');
     assert.match(readFileSync(join(r.root, 'factory', 'jobs', id, 'gate-1.md'), 'utf8'), /No commits/);
@@ -107,7 +116,7 @@ test('the gate rejects uncommitted work and lowered quality bars', () => {
   const r = makeRepo();
   try {
     const id = toBuild(r, 'Sneaky build');
-    r.job('spec-done', id);
+    specDone(r, id);
     r.commit(id, 'a.js', 'export const a = 1;\n');
     writeFileSync(join(r.state(id).worktree, 'stray.txt'), 'left behind\n');
     r.job('gate', id);
@@ -124,7 +133,7 @@ test('a failed review sends the job back for another round', () => {
   const r = makeRepo();
   try {
     const id = toBuild(r, 'Needs rework');
-    r.job('spec-done', id);
+    specDone(r, id);
     r.commit(id, 'a.txt', 'v1\n');
     r.job('gate', id);
     r.jobFile(id, 'review-1-code.md', 'unclear naming\n');
@@ -145,7 +154,7 @@ test('a verdict is refused without the reviewer\'s written findings', () => {
   const r = makeRepo();
   try {
     const id = toBuild(r, 'No findings');
-    r.job('spec-done', id);
+    specDone(r, id);
     r.commit(id, 'a.txt', 'v1\n');
     r.job('gate', id);
     const out = r.job('verdict', id, 'code', 'pass');
@@ -158,13 +167,14 @@ test('high-pain work stops for human plan review before any code is written', ()
   const r = makeRepo();
   try {
     const id = toBuild(r, 'Change the schema', ['--risk', 'medium', '--pain', 'high', '--surfaces', 'data']);
-    assert.deepEqual(r.state(id).reviewers.map((x) => x.name), ['code', 'qa', 'security']);
-    assert.match(r.job('spec-done', id).out, /Waiting for a human to approve the plan/);
+    assert.deepEqual(r.state(id).reviewers.map((x) => x.name), ['code', 'qa', 'security', 'privacy']);
+    assert.match(specDone(r, id).out, /Waiting for a human to approve the plan/);
     assert.equal(r.state(id).stage, 'needs-human');
+    assert.equal(r.state(id).waitingFor, 'plan');
 
     assert.equal(r.job('feedback', id, 'use', 'a', 'separate', 'table').code, 0);
     assert.equal(r.state(id).stage, 'spec', 'feedback sends the plan back to the spec agent');
-    r.job('spec-done', id);
+    specDone(r, id);
     assert.equal(r.job('approve-human', id).code, 0);
     assert.equal(r.state(id).stage, 'build');
   } finally { r.cleanup(); }
@@ -174,7 +184,7 @@ test('protected paths escalate to a human, who can then approve the merge', () =
   const r = makeRepo({ approval: { auditRate: 0, escalatePaths: ['**/billing/**'] } });
   try {
     const id = toBuild(r, 'Touch billing');
-    r.job('spec-done', id);
+    specDone(r, id);
     mkdirSync(join(r.state(id).worktree, 'billing'));
     r.commit(id, 'billing/price.txt', '10\n');
     r.job('gate', id);
@@ -212,4 +222,68 @@ test('intake can reject, and the queue reports free slots', () => {
     assert.equal(existsSync(r.state(id).worktree), false);
     assert.equal(JSON.parse(r.job('queue').out).freeSlots, 2);
   } finally { r.cleanup(); }
+});
+
+test('spec check: gaps go back to the spec writer, then to a human when they persist', () => {
+  const r = makeRepo();
+  try {
+    const id = toBuild(r, 'Vague feature');
+    assert.equal(r.job('grill', id, '--result', 'clear').code, 1, 'cannot grill before the spec is written');
+    r.job('spec-done', id);
+    assert.match(r.job('grill', id, '--result', 'revise').out, /grill-1\.md is missing/);
+
+    assert.match(specDone(r, id, 'revise').out, /gaps the spec writer can close/);
+    assert.equal(r.state(id).stage, 'spec');
+    assert.equal(r.state(id).specRound, 2);
+
+    assert.match(specDone(r, id, 'revise').out, /questions for a human/, 'second failed check stops the loop');
+    assert.equal(r.state(id).stage, 'needs-human');
+    assert.equal(r.state(id).waitingFor, 'answers');
+    assert.match(r.state(id).blockedReason, /still has gaps after 2 attempts/);
+  } finally { r.cleanup(); }
+});
+
+test('spec check: a human can answer the questions or accept the recommendations', () => {
+  const r = makeRepo();
+  try {
+    const id = toBuild(r, 'Needs a decision');
+    assert.match(specDone(r, id, 'ask').out, /questions for a human/);
+    assert.equal(r.state(id).waitingFor, 'answers');
+
+    assert.match(r.job('approve-human', id).out, /Recommended answers accepted/);
+    assert.equal(r.state(id).stage, 'spec');
+    assert.equal(r.state(id).specRound, 2);
+    assert.match(readFileSync(join(r.root, 'factory', 'jobs', id, 'feedback-1.md'), 'utf8'), /accepted every recommended answer in grill-1\.md/);
+
+    assert.match(specDone(r, id, 'ask').out, /questions for a human/);
+    r.job('feedback', id, '1:', 'option', 'B');
+    assert.equal(r.state(id).stage, 'spec');
+    assert.equal(r.state(id).specRound, 3);
+    assert.match(specDone(r, id).out, /Spec check passed/);
+    assert.equal(r.state(id).stage, 'build');
+  } finally { r.cleanup(); }
+});
+
+test('the spec check can be turned off', () => {
+  const r = makeRepo({ specReview: false });
+  try {
+    const id = toBuild(r, 'No check');
+    r.job('spec-done', id);
+    assert.equal(r.state(id).stage, 'build');
+  } finally { r.cleanup(); }
+});
+
+test('high-risk personal-data work gets privacy and doubt reviewers', () => {
+  const r = makeRepo();
+  try {
+    const id = toBuild(r, 'Export user emails', ['--risk', 'high', '--surfaces', 'pii,api']);
+    assert.deepEqual(r.state(id).reviewers.map((x) => x.name), ['code', 'qa', 'security', 'privacy', 'doubt']);
+    assert.ok(r.state(id).reviewers.every((x) => x.model === 'opus'));
+  } finally { r.cleanup(); }
+});
+
+test('the Copilot agent copies are in sync with the Claude agents', () => {
+  const script = resolve(dirname(fileURLToPath(import.meta.url)), '../factory/bin/sync-agents.mjs');
+  const out = spawnSync(process.execPath, [script, '--check'], { encoding: 'utf8' });
+  assert.equal(out.status, 0, out.stderr);
 });
