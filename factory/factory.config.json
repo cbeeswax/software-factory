@@ -16,6 +16,7 @@
   ],
   "models": {
     "intake": "fable",
+    "decompose": "opus",
     "design": "opus",
     "spec": "opus",
     "grill": "opus",
@@ -28,7 +29,7 @@
     }
   },
   "approval": {
-    "autoMerge": true,
+    "autoMerge": false,
     "mergeMethod": "squash",
     "auditRate": 0.2,
     "escalateRisk": [
@@ -95,7 +96,8 @@
       {
         "source": "mattpocock/skills",
         "skills": [
-          "grilling"
+          "grilling",
+          "software-factory"
         ]
       }
     ]
@@ -106,6 +108,15 @@
   },
   "memory": {
     "maxLessonsInBrief": 12,
-    "promoteAfter": 3
+    "promoteAfter": 3,
+    "sampleCleanJobs": 0.1
+  },
+  "tracker": {
+    "commandPrefix": "/factory",
+    "trusted": [
+      "OWNER",
+      "MEMBER",
+      "COLLABORATOR"
+    ]
   }
 }

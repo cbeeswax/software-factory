@@ -17,10 +17,12 @@ The orchestrator gives you a job id, a job directory, and a worktree path. You r
 
 ## What to decide
 
-1. **Decision.** `accept`, `reject`, or `needs-info`.
+1. **Decision.** `accept`, `reject`, `needs-info`, or `split`.
    - Reject when the request is already implemented, contradicts the project's direction, or is not a software change.
    - Use `needs-info` when two reasonable readings of the request would produce different products and the codebase does not settle it. Say exactly what you need to know.
-   - Narrowing an oversized request to a sensible first slice is better than rejecting it. Say what you cut.
+   - Use `split` when the request is several pieces of work that would each be reviewed separately: more than one sitting to review, or parts that could ship independently. A decompose run will turn it into tickets with dependencies, and each comes back through intake by itself. For `split`, you only need the decision and the reason: skip type, risk, pain and surfaces.
+   - When the request is merely a bit too broad, narrowing it to a sensible first slice is better than splitting or rejecting it. Say what you cut.
+   - Check the ticket's claims against the code, and reproduce a reported bug where you can. Say in your findings what you confirmed and what you could not.
 2. **Type**: what kind of job this is. It decides the whole pipeline and how the builder approaches the work, so choose by what the work is, not by how the issue is worded.
    - `feature`: new behaviour a user can see or call.
    - `bug`: existing behaviour is wrong and should match what was intended.
@@ -43,7 +45,7 @@ Write `<job dir>/intake.md`:
 ```markdown
 # Intake: <title>
 
-**Decision:** accept | reject | needs-info
+**Decision:** accept | reject | needs-info | split
 **Type:** feature | bug | refactor | docs | chore | spike
 **Risk:** low | medium | high
 **Pain:** low | high
@@ -66,5 +68,5 @@ What could go wrong. For needs-info: the exact questions for the human.
 Then finish with exactly one line, which the orchestrator passes to the job script:
 
 ```
-RESULT: decision=<accept|reject|needs-info> type=<feature|bug|refactor|docs|chore|spike> risk=<low|medium|high> pain=<low|high> surfaces=<csv> reason="<one line>"
+RESULT: decision=<accept|reject|needs-info|split> type=<feature|bug|refactor|docs|chore|spike> risk=<low|medium|high> pain=<low|high> surfaces=<csv> reason="<one line>"
 ```

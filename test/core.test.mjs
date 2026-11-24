@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  DEFAULT_CONFIG, PR_SECTIONS, addLesson, finishPrDescription, validatePrDescription, afterGrill, planJob, selectLessons, afterReviews, installCommand, missingSkills, computeStats, decideApproval, globToRegExp, mergeConfig, needsPlanReview,
+  DEFAULT_CONFIG, PR_SECTIONS, parseDependencies, parseTrackerCommand, sampled, validateTickets, addLesson, finishPrDescription, validatePrDescription, afterGrill, planJob, selectLessons, afterReviews, installCommand, missingSkills, computeStats, decideApproval, globToRegExp, mergeConfig, needsPlanReview,
   parseDiff, route, scanDiff, scanSecrets, slugify,
 } from '../factory/lib/core.mjs';
 
 const cfg = DEFAULT_CONFIG;
-const noAudit = mergeConfig(cfg, { approval: { auditRate: 0 } });
+const noAudit = mergeConfig(cfg, { approval: { auditRate: 0, autoMerge: true } });
 
 test('slugify makes short, safe ids', () => {
   assert.equal(slugify('Add Dark Mode!! (v2)'), 'add-dark-mode-v2');
@@ -134,7 +134,7 @@ test('approval: the agent can escalate but cannot override the rules', () => {
 });
 
 test('approval: spot-check audit is deterministic and roughly the configured rate', () => {
-  const audit = mergeConfig(cfg, { approval: { auditRate: 0.2 } });
+  const audit = mergeConfig(cfg, { approval: { auditRate: 0.2, autoMerge: true } });
   const run = () => Array.from({ length: 500 }, (_, i) => decideApproval({ job: { id: `job-${i}`, risk: 'low' }, recommendation: 'merge', files: [] }, audit).merge);
   const first = run();
   assert.deepEqual(first, run());
@@ -259,4 +259,48 @@ test('pull request description: every component diagram gets the same colours an
   assert.deepEqual(validatePrDescription(out), []);
   assert.ok(out.indexOf('## Summary') < out.indexOf('## Component diagram') && out.indexOf('**Legend:**') < out.indexOf('## Sequence diagram'));
   assert.ok(!/classDef/.test(out.slice(out.indexOf('## Sequence diagram'))), 'the sequence diagram is left alone');
+});
+
+test('start slow: nothing merges without a human until auto-merge is switched on', () => {
+  assert.equal(cfg.approval.autoMerge, false);
+  const v = decideApproval({ job: { id: 'j1', risk: 'low' }, recommendation: 'merge', files: ['src/a.js'] }, cfg);
+  assert.equal(v.merge, false);
+  assert.deepEqual(v.reasons, ['Auto-merge is turned off']);
+});
+
+test('dependencies are read from ticket text', () => {
+  assert.deepEqual(parseDependencies('Part of #3.\nDepends on #12, #13 and #14'), [12, 13, 14]);
+  assert.deepEqual(parseDependencies('blocked by #7\n\nDepends on: #9'), [7, 9]);
+  assert.deepEqual(parseDependencies('Fixes #5, see also #6. Nothing depends on this.'), []);
+  assert.deepEqual(parseDependencies(''), []);
+});
+
+test('ticket comments addressed to the factory are understood, and others are ignored', () => {
+  assert.deepEqual(parseTrackerCommand('/factory approve'), { action: 'approve', text: '' });
+  assert.deepEqual(parseTrackerCommand('  /Factory LGTM '), { action: 'approve', text: '' });
+  assert.deepEqual(parseTrackerCommand('/factory reject out of scope for now'), { action: 'reject', text: 'out of scope for now' });
+  assert.deepEqual(parseTrackerCommand('/factory 1: option B. 2: keep the old name'), { action: 'feedback', text: '1: option B. 2: keep the old name' });
+  assert.deepEqual(parseTrackerCommand('/factory approve but rename the flag'), { action: 'feedback', text: 'approve but rename the flag' });
+  assert.equal(parseTrackerCommand('looks good to me, approve'), null);
+  assert.equal(parseTrackerCommand('/factory'), null);
+  assert.equal(parseTrackerCommand('**Factory** (job x): needs a human'), null, 'the factory never answers itself');
+});
+
+test('a proposed split is validated and ordered by dependency', () => {
+  const body = 'Build the thing described here, done when the listed checks pass.';
+  const t = (key, dependsOn = []) => ({ key, title: `Build ${key}`, body, dependsOn });
+  assert.deepEqual(validateTickets([t('ui', ['api']), t('api', ['schema']), t('schema')]), { problems: [], order: ['schema', 'api', 'ui'] });
+  assert.match(validateTickets([t('only')]).problems.join(' '), /at least two tickets/);
+  assert.match(validateTickets([t('a', ['b']), t('b', ['a'])]).problems.join(' '), /in a circle/);
+  assert.match(validateTickets([t('a', ['ghost']), t('b')]).problems.join(' '), /not one of the tickets/);
+  assert.match(validateTickets([t('a'), t('a')]).problems.join(' '), /used twice/);
+  assert.match(validateTickets([{ ...t('a'), body: 'todo' }, t('b')]).problems.join(' '), /how to tell it is done/);
+  assert.match(validateTickets({}).problems.join(' '), /must be a JSON array/);
+});
+
+test('sampling is stable and close to the rate', () => {
+  assert.equal(sampled('job-1', 0), false);
+  assert.equal(sampled('job-1', 0.5), sampled('job-1', 0.5));
+  const hits = Array.from({ length: 1000 }, (_, i) => sampled(`job-${i}`, 0.1)).filter(Boolean).length;
+  assert.ok(hits > 60 && hits < 140, `sampled ${hits} of 1000`);
 });

@@ -24,7 +24,8 @@ function makeRepo(config = {}) {
   mkdirSync(join(root, 'factory'), { recursive: true });
   writeFileSync(join(root, 'factory', 'factory.config.json'), JSON.stringify({
     checks: [{ name: 'check', cmd: 'node check.js' }],
-    approval: { auditRate: 0 },
+    approval: { auditRate: 0, autoMerge: true },
+    memory: { sampleCleanJobs: 0 },
     ...config,
   }));
   writeFileSync(join(root, 'check.js'), 'process.exit(require("fs").existsSync("BROKEN") ? 1 : 0);\n');
@@ -187,7 +188,7 @@ test('high-pain work stops for human plan review before any code is written', ()
 });
 
 test('protected paths escalate to a human, who can then approve the merge', () => {
-  const r = makeRepo({ approval: { auditRate: 0, escalatePaths: ['**/billing/**'] } });
+  const r = makeRepo({ approval: { auditRate: 0, autoMerge: true, escalatePaths: ['**/billing/**'] } });
   try {
     const id = toBuild(r, 'Touch billing');
     specDone(r, id);
@@ -398,5 +399,36 @@ test('the gate requires a pull request description in the fixed format', () => {
     r.jobFile(id, 'pr.md', PR_DESCRIPTION);
     assert.match(r.job('gate', id).out, /Gate PASSED/);
     assert.deepEqual(r.state(id).lastGate.checks.map((c) => [c.cmd, c.pass]), [['node check.js', true]]);
+  } finally { r.cleanup(); }
+});
+
+test('a job too big for one run goes to decompose, and its tickets are checked before filing', () => {
+  const r = makeRepo();
+  try {
+    r.job('create', '--title', 'Rebuild billing', '--no-setup');
+    const id = JSON.parse(r.job('list', '--json').out).at(-1).id;
+    assert.match(r.job('intake', id, '--decision', 'split', '--reason', 'three separate pieces').out, /factory-decompose/);
+    assert.equal(r.state(id).stage, 'decompose');
+    assert.match(r.job('split', id).out, /tickets\.json is missing/);
+    r.jobFile(id, 'tickets.json', JSON.stringify([{ key: 'a', title: 'Only one', body: 'x', dependsOn: [] }]));
+    assert.match(r.job('split', id).out, /at least two tickets/);
+    const body = 'Build this piece; it is done when its acceptance checks pass.';
+    r.jobFile(id, 'tickets.json', JSON.stringify([{ key: 'api', title: 'Billing API', body, dependsOn: [] }, { key: 'ui', title: 'Billing page', body, dependsOn: ['api'] }]));
+    assert.match(r.job('split', id).out, /has none to hang them from/, 'a local job cannot be split into tracker tickets');
+    assert.equal(r.state(id).stage, 'decompose');
+  } finally { r.cleanup(); }
+});
+
+test('a clean merged job can be sampled for a routine retro', () => {
+  const r = makeRepo({ memory: { sampleCleanJobs: 1 } });
+  try {
+    const id = toBuild(r, 'Clean job');
+    specDone(r, id);
+    r.commit(id, 'a.txt', 'v1\n');
+    r.job('gate', id);
+    passAllReviews(r, id);
+    const out = r.job('approve', id, '--decision', 'merge', '--reason', 'ok').out;
+    assert.match(out, /picked for a routine retro/);
+    assert.equal(r.state(id).learn, 'pending');
   } finally { r.cleanup(); }
 });

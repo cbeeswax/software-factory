@@ -20,9 +20,19 @@ An agentic software factory for Claude Code and GitHub Copilot. GitHub issues go
                                         is hard to reverse
 ```
 
+## Start slow
+
+Every trigger is an accelerator, and accelerators without brakes produce slop at speed. The factory ships with the brakes on:
+
+- **A human reads every pull request.** `approval.autoMerge` is `false` until you turn it on.
+- **Sources do not start work.** Tickets filed by the collector wait under `factory:triage` until a person adds the `factory` label.
+- **Every loop is capped.** Review rounds, gate failures and spec revisions each stop at a limit and hand the job to a person.
+
+Open one throttle at a time as the checks and reviews earn your trust. `factory/DESIGN.md` lists every throttle and where it starts.
+
 ## What it does
 
-1. **Intake.** An agent reads the issue against the codebase, decides whether it is worth building, narrows the scope, says what kind of job it is, and rates the risk. Code turns that into the job's plan and writes a brief every later agent reads first.
+1. **Intake.** An agent reads the issue against the codebase, checks its claims, decides whether it is worth building, narrows the scope or sends an oversized request to be split into tickets, says what kind of job it is, and rates the risk. Code turns that into the job's plan and writes a brief every later agent reads first.
 
    | Kind of job | How it is handled |
    |---|---|
@@ -57,6 +67,22 @@ An agentic software factory for Claude Code and GitHub Copilot. GitHub issues go
 10. **Learn.** If anything went wrong on the way, a retro agent works out the cause and records a lesson. See "How it learns" below.
 
 `/factory collect` turns production errors and inbox notes into new issues, which closes the loop.
+
+### Work that is too big
+
+When intake finds a request is several pieces of work, a decompose agent splits it into two to twelve tickets, each buildable and reviewable by itself, and records which depend on which. The factory files them in order with "Depends on #n" lines. A ticket is not started until the tickets it depends on are closed, and tickets with no dependencies between them are built in parallel. You can write "Depends on #12" in any ticket yourself and get the same ordering.
+
+### The ticket is the conversation
+
+The ticket tracker is where people talk to the factory. Each ticket shows what the factory is doing through labels (`factory:running`, `factory:needs-human`) and comments from every stage. When a job is waiting on you, reply on the ticket with a comment that starts with `/factory`:
+
+- `/factory approve` approves the plan, the recommended answers, or the merge, whichever it is waiting for.
+- `/factory reject <why>` drops the job.
+- `/factory <anything else>` is taken as your answer or feedback.
+
+Only comments from the repository's owner, members and collaborators count. The next `/factory run` picks them up. You can also just answer in the session.
+
+The `factory:running` label is also what keeps two factories, on two machines, from building the same ticket.
 
 ## How it learns
 
@@ -114,6 +140,8 @@ Then:
 | `/factory grill 12` | The factory walks you through the open questions on a spec, one round at a time. |
 | `/factory 12: use a separate table instead` | Your feedback is recorded and the job resumes. |
 | `/factory collect` | Files new issues from the configured sources. |
+| `/factory scan` | Looks over recent changes for places the codebase is drifting, and files refactoring candidates for you to choose from. |
+| `/factory design` | Grills you about a change to the factory itself, in the vocabulary of the `software-factory` skill, and updates `factory/DESIGN.md`. |
 | `/factory skills` | Checks that the agent skills are installed, and installs any that are missing. |
 | `/factory lessons` | Shows what the factory has learned. |
 | `/factory retro` | Reviews the factory as a whole and proposes changes to it, including checks for lessons that keep recurring. |
@@ -195,7 +223,10 @@ Everything is in `factory/factory.config.json`.
 | `checks` | auto-detected | Commands the gate runs in the job's worktree. |
 | `setup` | auto-detected | Commands that prepare a fresh worktree, such as `npm ci`. |
 | `models` | see file | Model per stage, and per risk level for reviewers. |
-| `approval.autoMerge` | `true` | Allow merges with no human. |
+| `approval.autoMerge` | `false` | Allow merges with no human. Off until you trust the checks and reviews. |
+| `tracker.commandPrefix` | `/factory` | What a ticket comment must start with to be read as an answer to the factory. |
+| `tracker.trusted` | owner, members, collaborators | Whose ticket comments the factory acts on. |
+| `memory.sampleCleanJobs` | `0.1` | Share of cleanly merged jobs that still get a retro. |
 | `approval.auditRate` | `0.2` | Share of auto-mergeable jobs sent to a human anyway. |
 | `approval.escalateRisk` | `["high"]` | Risk levels that always need a human. |
 | `approval.escalatePaths` | see file | Paths that always need a human. |
@@ -220,26 +251,31 @@ Everything is in `factory/factory.config.json`.
 - **sentry** reads unresolved issues from the Sentry API. Set `SENTRY_AUTH_TOKEN` in your environment.
 - **inbox** turns each Markdown file in a folder into an issue.
 - **command** runs anything that prints a JSON array of `{ "key", "title", "body" }`. Use it for PostHog, support tickets, a metrics threshold, or any other system.
+- **ratchet** migrates the codebase to a stricter check one file at a time. Turn the new rule on with the failing files on an exception list, then add `{ "type": "ratchet", "name": "strict-types", "listFile": "lint-exceptions.txt", "check": "npm run lint:strict" }`. Each collection files one ticket for the next file on the list, and nothing while one is still open, so review stays cheap and the check only ever gets stricter.
 
-Collected issues are labelled `factory:triage`, not `factory`, so a person chooses what gets built. Each one carries a `Factory-Source:` line that stops the same problem being filed twice. Set `autoQueue` to `true` only when you trust a source enough to let it start work on its own.
+Collected issues are labelled `factory:triage`, not `factory`, so a person chooses what gets built. Each one carries a `Factory-Source:` line that stops the same problem being filed twice. If a problem is reported again after its ticket was closed, the collector reopens that ticket. Set `autoQueue` to `true` only when you trust a source enough to let it start work on its own.
 
 ## Where the design comes from
 
-This project implements the ideas in four talks, and says so where it follows one:
+`factory/DESIGN.md` describes this factory in the shared vocabulary of Matt Pocock's [`software-factory` skill](https://github.com/mattpocock/skills/tree/main/skills/in-progress/software-factory): every service slot and what fills it, every task with what triggers it and what it triggers next, the brakes, and the gaps that remain. Read it before changing how the factory works.
+
+This project implements the ideas in four talks and that skill, and says so where it follows one:
 
 | Idea | Source | Where it lives |
 |---|---|---|
 | A skill as orchestrator, subagents per stage, Markdown job files, a dashboard, worktrees for parallel jobs | ZazenCodes, [Build Your Own AI Software Factory with Claude Code](https://www.youtube.com/watch?v=ctoaIC4LHmI) | `.claude/skills/factory`, `.claude/agents`, `factory/dashboard` |
 | Issues in and pull requests out, an intake stage, a deterministic spine, a gate before review, routing by risk, concurrency, time and cost per job, resuming after a crash | ZazenCodes, [Build a Better Software Factory with Claude Code](https://www.youtube.com/watch?v=RiaTyJ2POVo) | `factory/bin/job.mjs`, `factory/lib/core.mjs` |
 | Collecting work from telemetry, a QA specialist, a "should this code exist" check before building, progress logged on the issue, hooks that block secrets | Eric Tech, [I Built a Self-Improving Software Factory](https://www.youtube.com/watch?v=aggJvNZxfKA) | `factory/bin/collect.mjs`, `factory-reviewer-qa`, `factory-builder`, `factory/bin/guard.mjs` |
+| Start slow with throttled triggers and human review; one live run per ticket; humans re-entering through the ticket tracker; the explore, decompose, rework, ratchet, architecture and retro tasks; fixing friction in the environment instead of working around it | Matt Pocock, [`software-factory`](https://github.com/mattpocock/skills/tree/main/skills/in-progress/software-factory) and [`chief-of-staff`](https://github.com/mattpocock/skills/tree/main/skills/in-progress/chief-of-staff) skills | `factory/DESIGN.md`, `approval.autoMerge`, the claim labels, `/factory` ticket comments, `factory-decompose`, the ratchet source, `factory-scout`, `factory-retro` |
 | Forward and back pressure, understanding the problem before building, planning in proportion to the cost of being wrong, fighting slop with deterministic rules, learning from past sessions, keeping decisions in one place, humans reviewing a subset chosen by stakes | Dex Horthy, [12 Rules for a Software Factory That Doesn't Ship Slop](https://www.youtube.com/watch?v=-NFMsM2y0Vk) | the slop gate, the design stage, the spec check, plan review, `approval.auditRate`, `factory/memory`, `factory-retro` |
 
 ## Before you trust it with production
 
-- **Start with `autoMerge` off**, or on a repository where a bad merge is cheap, and read what it produces. Turn automation up as it earns it.
+- **Leave `autoMerge` off at first**, and read what it produces. Turn automation up as it earns it.
 - **The gate is only as good as your checks.** With weak tests, the factory will ship code that passes weak tests.
 - **Issue text is untrusted input.** Agents are told to treat it as a request and not as instructions, and only issues you label are processed, but do not label an issue you have not read on a public repository.
 - **It costs tokens.** A small chore runs about five agents; a high-risk feature touching personal data runs fifteen or more, plus rework. `job.mjs status <job>` shows the time per stage and the tokens recorded.
+- **It runs on your machine.** The orchestrator is your agent session and the job files live on your disk; a label change on GitHub does not start work until `/factory run` runs. `factory/DESIGN.md` lists this and the other known gaps.
 - **Job files are local.** `factory/jobs/` is not committed. The durable record is the issue comments and the pull request.
 - **Not yet exercised:** the Sentry source has not been run against a real account, and the GitHub Copilot path has not been run in Copilot. The Copilot agent files follow GitHub's documented format, but expect to adjust the delegation wording for your Copilot surface on the first run.
 

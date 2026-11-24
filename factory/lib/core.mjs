@@ -1,7 +1,7 @@
 // Pure logic for the factory: no I/O, no git, no GitHub. Everything here is unit tested.
 
-export const STAGES = ['intake', 'design', 'spec', 'grill', 'build', 'gate', 'review', 'approve', 'needs-human', 'merged', 'rejected'];
-export const TERMINAL = ['merged', 'rejected'];
+export const STAGES = ['intake', 'decompose', 'design', 'spec', 'grill', 'build', 'gate', 'review', 'approve', 'needs-human', 'merged', 'rejected', 'split'];
+export const TERMINAL = ['merged', 'rejected', 'split'];
 export const RISKS = ['low', 'medium', 'high'];
 export const SURFACES = ['ui', 'api', 'data', 'pii', 'auth', 'infra', 'deps', 'perf', 'docs', 'logic'];
 export const TYPES = ['feature', 'bug', 'refactor', 'docs', 'chore', 'spike'];
@@ -22,6 +22,7 @@ export const DEFAULT_CONFIG = {
   maxSpecRounds: 2,
   models: {
     intake: 'fable',
+    decompose: 'opus',
     design: 'opus',
     spec: 'opus',
     grill: 'opus',
@@ -77,9 +78,11 @@ export const DEFAULT_CONFIG = {
       skills: { builder: ['prototype'] },
     },
   },
-  memory: { maxLessonsInBrief: 12, promoteAfter: 3 },
+  memory: { maxLessonsInBrief: 12, promoteAfter: 3, sampleCleanJobs: 0.1 },
+  // The ticket tracker is the human interface: a trusted person can answer a waiting job in a ticket comment.
+  tracker: { commandPrefix: '/factory', trusted: ['OWNER', 'MEMBER', 'COLLABORATOR'] },
   approval: {
-    autoMerge: true,
+    autoMerge: false,
     mergeMethod: 'squash',
     auditRate: 0.2,
     escalateRisk: ['high'],
@@ -110,7 +113,7 @@ export const DEFAULT_CONFIG = {
           'api-and-interface-design', 'documentation-and-adrs', 'performance-optimization', 'deprecation-and-migration',
         ],
       },
-      { source: 'mattpocock/skills', skills: ['grilling'] },
+      { source: 'mattpocock/skills', skills: ['grilling', 'software-factory'] },
     ],
   },
   pricing: {},
@@ -218,6 +221,11 @@ export function afterReviews(job, cfg = DEFAULT_CONFIG) {
     return { done: true, stage: 'needs-human', failed, reason: `Still failing review after ${round} rounds: ${failed.join(', ')}` };
   }
   return { done: true, stage: 'build', failed, round: round + 1 };
+}
+
+/** A stable yes/no for "is this one in the sample", so the same job always gets the same answer. */
+export function sampled(id, rate) {
+  return rate > 0 && hashFraction(String(id)) < rate;
 }
 
 function hashFraction(str) {
@@ -558,4 +566,64 @@ export function finishPrDescription(text) {
     })
     .replace(new RegExp(`(\\n\\n${DIAGRAM_LEGEND.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})+`, 'g'), `\n\n${DIAGRAM_LEGEND}`);
   return `${t.slice(0, start)}${section.trimEnd()}\n\n${t.slice(end)}`;
+}
+
+// ---------------------------------------------------------------- tickets, dependencies and the tracker
+
+/** Ticket numbers this ticket waits on, from "Depends on #12, #13" or "Blocked by #7" lines. */
+export function parseDependencies(body) {
+  const out = new Set();
+  for (const m of String(body || '').matchAll(/(?:depends on|blocked by)[:\s]+((?:#\d+(?:\s*(?:,|and|&)\s*)?)+)/gi)) {
+    for (const n of m[1].matchAll(/#(\d+)/g)) out.add(Number(n[1]));
+  }
+  return [...out];
+}
+
+/** What a human asked for in a ticket comment, or null if the comment is not addressed to the factory. */
+export function parseTrackerCommand(body, prefix = '/factory') {
+  const text = String(body || '').trim();
+  if (!text.toLowerCase().startsWith(prefix.toLowerCase())) return null;
+  const rest = text.slice(prefix.length).trim();
+  const word = (rest.split(/\s+/)[0] || '').toLowerCase().replace(/[^a-z]/g, '');
+  const after = rest.slice(rest.split(/\s+/)[0].length).trim();
+  if (['approve', 'approved', 'lgtm', 'go'].includes(word) && !after) return { action: 'approve', text: '' };
+  if (['reject', 'drop', 'close'].includes(word)) return { action: 'reject', text: after };
+  if (!rest) return null;
+  return { action: 'feedback', text: rest };
+}
+
+/**
+ * Checks the tickets a decompose run proposes, and puts them in an order where every ticket
+ * comes after the ones it depends on.
+ */
+export function validateTickets(tickets) {
+  const problems = [];
+  if (!Array.isArray(tickets)) return { problems: ['tickets.json must be a JSON array of tickets.'], order: [] };
+  if (tickets.length < 2) problems.push('A split needs at least two tickets. If the work fits in one, do not split it.');
+  if (tickets.length > 12) problems.push('More than twelve tickets. Split into fewer, larger pieces, or split the request itself first.');
+  const keys = new Set();
+  for (const [i, t] of tickets.entries()) {
+    const where = `Ticket ${i + 1}`;
+    if (!t || typeof t !== 'object') { problems.push(`${where} is not an object.`); continue; }
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(t.key || '')) problems.push(`${where}: "key" must be a short lowercase name such as "api" or "settings-page".`);
+    else if (keys.has(t.key)) problems.push(`${where}: key "${t.key}" is used twice.`);
+    else keys.add(t.key);
+    if (String(t.title || '').trim().length < 5) problems.push(`${where}: needs a title.`);
+    if (String(t.body || '').trim().length < 40) problems.push(`${where}: the body must say what to build and how to tell it is done.`);
+    if (!Array.isArray(t.dependsOn)) problems.push(`${where}: "dependsOn" must be an array of keys (empty if none).`);
+  }
+  if (problems.length) return { problems, order: [] };
+  for (const t of tickets) for (const d of t.dependsOn) {
+    if (!keys.has(d)) problems.push(`"${t.key}" depends on "${d}", which is not one of the tickets.`);
+    if (d === t.key) problems.push(`"${t.key}" depends on itself.`);
+  }
+  if (problems.length) return { problems, order: [] };
+  const order = [];
+  const left = new Map(tickets.map((t) => [t.key, new Set(t.dependsOn)]));
+  while (left.size) {
+    const ready = [...left].filter(([, deps]) => [...deps].every((d) => order.includes(d))).map(([k]) => k);
+    if (!ready.length) return { problems: [`These tickets depend on each other in a circle: ${[...left.keys()].join(', ')}.`], order: [] };
+    for (const k of ready) { order.push(k); left.delete(k); }
+  }
+  return { problems: [], order };
 }

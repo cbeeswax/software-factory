@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import {
   LESSON_AGENTS, PR_SECTIONS, RISKS, SURFACES, TERMINAL, TYPES, addLesson, afterGrill, afterReviews, computeStats, decideApproval, formatDuration,
-  finishPrDescription, lessonsToPromote, markSeen, planJob, validatePrDescription, renderBrief, renderLessons, scanDiff, slugify, stageDurations, usageTotals,
+  finishPrDescription, lessonsToPromote, markSeen, parseDependencies, parseTrackerCommand, planJob, sampled, validateTickets, validatePrDescription, renderBrief, renderLessons, scanDiff, slugify, stageDurations, usageTotals,
 } from '../lib/core.mjs';
 import {
   GH_ENABLED, ROOT, gh, ghTry, git, gitTry, jobDir, jobFiles, listJobs, loadConfig, loadJob, loadLessons, saveJob, saveLessons, sh, writeJobFile,
@@ -30,15 +30,37 @@ function parseArgs(argv) {
   return out;
 }
 
-function fail(msg) { console.error(`ERROR: ${msg}`); process.exit(1); }
-function say(msg) { console.log(msg); }
+// While a command runs on behalf of a ticket comment, its output is captured instead of printed.
+let sink = null;
+function fail(msg) { if (sink) throw new Error(msg); console.error(`ERROR: ${msg}`); process.exit(1); }
+function say(msg) { if (sink) sink.push(msg); else console.log(msg); }
+
+const LABEL_RUNNING = `${cfg.label}:running`;
+const LABEL_HUMAN = `${cfg.label}:needs-human`;
+
+/** Labels are how the ticket tracker shows a human, and any other factory, what a ticket is doing. */
+function label(job, add, remove = []) {
+  if (!job.issue || !GH_ENABLED) return;
+  const n = String(job.issue);
+  for (const l of remove) ghTry(['issue', 'edit', n, '--remove-label', l]);
+  for (const l of add) {
+    if (ghTry(['issue', 'edit', n, '--add-label', l]).ok) continue;
+    ghTry(['label', 'create', l, '--color', l === LABEL_HUMAN ? 'D93F0B' : 'FBCA04']);
+    ghTry(['issue', 'edit', n, '--add-label', l]);
+  }
+}
 
 function transition(job, stage, note) {
+  const was = job.stage;
+  if (stage === 'needs-human' && was !== 'needs-human') label(job, [LABEL_HUMAN]);
+  if (was === 'needs-human' && stage !== 'needs-human') label(job, [], [LABEL_HUMAN]);
+  if (TERMINAL.includes(stage)) label(job, [], [LABEL_RUNNING, LABEL_HUMAN]);
   if (job.stage !== stage) job.prevStage = job.stage;
   job.stage = stage;
   job.history.push({ stage, at: new Date().toISOString(), ...(note ? { note } : {}) });
   // A finished job that went wrong somewhere owes the factory a lesson.
-  if (TERMINAL.includes(stage)) job.learn = (job.mistakes || []).length ? 'pending' : 'none';
+  // A merged job that went cleanly is still sampled now and then, to catch what every agent missed.
+  if (TERMINAL.includes(stage)) job.learn = (job.mistakes || []).length || (stage === 'merged' && sampled(job.id, cfg.memory.sampleCleanJobs)) ? 'pending' : 'none';
 }
 
 /** Every failure along the way is kept: this is the raw material the factory learns from. */
@@ -89,7 +111,9 @@ function nextHint(job) {
   const ctx = `Job dir: ${dir} | Worktree: ${job.worktree} | Round: ${job.round}`;
   switch (job.stage) {
     case 'intake':
-      return `NEXT: delegate to agent "factory-intake" (model ${cfg.models.intake}). ${ctx}\n      then: ${SELF} intake ${job.id} --decision <accept|reject|needs-info> --risk <low|medium|high> --type <${TYPES.join('|')}> --pain <low|high> --surfaces <csv of ${SURFACES.join(',')}> --reason "<one line>"`;
+      return `NEXT: delegate to agent "factory-intake" (model ${cfg.models.intake}). ${ctx}\n      then: ${SELF} intake ${job.id} --decision <accept|reject|needs-info|split> --risk <low|medium|high> --type <${TYPES.join('|')}> --pain <low|high> --surfaces <csv of ${SURFACES.join(',')}> --reason "<one line>"`;
+    case 'decompose':
+      return `NEXT: delegate to agent "factory-decompose" (model ${cfg.models.decompose}). ${ctx}\n      then: ${SELF} split ${job.id}`;
     case 'design':
       return `NEXT: delegate to agent "factory-design" (model ${cfg.models.design}). ${ctx}\n      then: ${SELF} design-done ${job.id}`;
     case 'spec':
@@ -110,7 +134,7 @@ function nextHint(job) {
     case 'needs-human':
       return `WAITING ON HUMAN (${job.waitingFor || 'guidance'}): ${job.blockedReason || 'no reason recorded'}\n      human says go:      ${SELF} approve-human ${job.id}\n      human wants changes: ${SELF} feedback ${job.id} "<what they said>"\n      human says drop it:  ${SELF} reject ${job.id} --reason "<why>"`;
     default:
-      if (job.learn === 'pending') return `DONE: job is ${job.stage}, and it made ${job.mistakes.length} mistake(s) along the way.\n      NEXT: delegate to agent "factory-retro" (model ${cfg.models.approver}). ${ctx}\n      then: ${SELF} learned ${job.id}`;
+      if (job.learn === 'pending') return `DONE: job is ${job.stage}, and ${job.mistakes.length ? `it made ${job.mistakes.length} mistake(s) along the way` : 'it was picked for a routine retro'}.\n      NEXT: delegate to agent "factory-retro" (model ${cfg.models.approver}). ${ctx}\n      then: ${SELF} learned ${job.id}`;
       return `DONE: job is ${job.stage}.`;
   }
 }
@@ -129,17 +153,72 @@ function report(job, headline) {
 
 const commands = {};
 
+/** Runs another command with its output captured, for work done on behalf of a ticket comment. */
+function quietly(name, args) {
+  const out = [];
+  sink = out;
+  try { commands[name](args); return { ok: true, out: out.join('\n') }; } catch (e) { return { ok: false, out: String(e.message) }; } finally { sink = null; }
+}
+
+/** A trusted human answered a waiting job in a ticket comment: act on it. */
+function readTracker(job) {
+  const r = ghTry(['issue', 'view', String(job.issue), '--json', 'comments']);
+  if (!r.ok) return null;
+  const comments = JSON.parse(r.out).comments;
+  // Only what was said after the factory last spoke on the ticket. Going by position in the thread
+  // avoids trusting this machine's clock to agree with the tracker's.
+  const lastOwn = comments.findLastIndex((c) => c.body.startsWith('**Factory**'));
+  const since = Date.parse(job.history.at(-1).at);
+  for (const c of comments.slice(lastOwn + 1)) {
+    if (lastOwn < 0 && Date.parse(c.createdAt) <= since) continue;
+    if (c.id === job.trackerSeen || !cfg.tracker.trusted.includes(c.authorAssociation)) continue;
+    const cmd = parseTrackerCommand(c.body, cfg.tracker.commandPrefix);
+    if (!cmd) continue;
+    job.trackerSeen = c.id;
+    saveJob(job);
+    const args = { _: cmd.action === 'feedback' ? [job.id, cmd.text] : [job.id], flags: cmd.action === 'reject' ? { reason: cmd.text || 'Rejected on the ticket' } : {} };
+    const done = quietly(cmd.action === 'approve' ? 'approve-human' : cmd.action, args);
+    return { job: job.id, by: c.author && c.author.login, action: cmd.action, ok: done.ok, result: done.out.split('\n')[0] };
+  }
+  return null;
+}
+
 commands.queue = () => {
-  const jobs = listJobs();
+  let jobs = listJobs();
+  const fromTracker = [];
+  if (GH_ENABLED) for (const j of jobs.filter((x) => x.stage === 'needs-human' && x.issue)) { const t = readTracker(j); if (t) fromTracker.push(t); }
+  jobs = listJobs();
   const active = jobs.filter((j) => !TERMINAL.includes(j.stage));
   const running = active.filter((j) => j.stage !== 'needs-human');
   let pending = [];
+  const blocked = [];
+  const claimedElsewhere = [];
   let warning = null;
   if (GH_ENABLED) {
-    const r = ghTry(['issue', 'list', '--label', cfg.label, '--state', 'open', '--limit', '100', '--json', 'number,title']);
+    const r = ghTry(['issue', 'list', '--label', cfg.label, '--state', 'open', '--limit', '200', '--json', 'number,title,body,labels']);
     if (r.ok) {
-      const known = new Set(jobs.map((j) => j.issue).filter(Boolean));
-      pending = JSON.parse(r.out).filter((i) => !known.has(i.number)).sort((a, b) => a.number - b.number);
+      const mine = new Set(active.map((j) => j.issue).filter(Boolean));
+      const all = ghTry(['issue', 'list', '--state', 'open', '--limit', '1000', '--json', 'number']);
+      const open = new Set(all.ok ? JSON.parse(all.out).map((i) => i.number) : []);
+      const finished = new Set(jobs.filter((j) => TERMINAL.includes(j.stage)).map((j) => j.issue).filter(Boolean));
+      for (const i of JSON.parse(r.out).sort((a, b) => a.number - b.number)) {
+        if (mine.has(i.number)) continue;
+        // The tracker's label search lags by a few seconds. For a ticket this factory already
+        // finished with, ask for the ticket itself before believing it is queued again.
+        if (finished.has(i.number)) {
+          const now = ghTry(['issue', 'view', String(i.number), '--json', 'state,labels']);
+          if (!now.ok) continue;
+          const fresh = JSON.parse(now.out);
+          if (fresh.state !== 'OPEN' || !fresh.labels.some((l) => l.name === cfg.label)) continue;
+          i.labels = fresh.labels;
+        }
+        const entry = { number: i.number, title: i.title };
+        const waitingOn = parseDependencies(i.body).filter((d) => d !== i.number && open.has(d));
+        // Another factory has this ticket. Two runs must never do the same work.
+        if (i.labels.some((l) => l.name === LABEL_RUNNING)) claimedElsewhere.push(entry);
+        else if (waitingOn.length) blocked.push({ ...entry, waitingOn });
+        else pending.push(entry);
+      }
     } else warning = `Could not read GitHub issues: ${r.err}`;
   }
   const slots = Math.max(0, cfg.concurrency - running.length);
@@ -150,6 +229,9 @@ commands.queue = () => {
     toLearn: jobs.filter((j) => j.learn === 'pending').map((j) => ({ id: j.id, mistakes: j.mistakes.length, next: nextHint(j) })),
     needsHuman: active.filter((j) => j.stage === 'needs-human').map((j) => ({ id: j.id, title: j.title, reason: j.blockedReason })),
     pendingIssues: pending,
+    ...(blocked.length ? { blockedByDependencies: blocked } : {}),
+    ...(claimedElsewhere.length ? { claimedElsewhere, claimedElsewhereNote: `These carry the "${LABEL_RUNNING}" label but have no job here. Another factory is working on them; if none is, remove the label to release them.` } : {}),
+    ...(fromTracker.length ? { fromTracker } : {}),
     startNow: pending.slice(0, slots).map((i) => `${SELF} create ${i.number}`),
     ...(warning ? { warning } : {}),
   }, null, 2));
@@ -163,14 +245,16 @@ commands.create = ({ _, flags }) => {
   if (_[0]) {
     issue = Number(String(_[0]).replace(/^#/, ''));
     if (!Number.isInteger(issue)) fail('Usage: create <issue-number>  |  create --title "..." [--body "..."]');
-    const existing = listJobs().find((j) => j.issue === issue);
+    const existing = listJobs().find((j) => j.issue === issue && !TERMINAL.includes(j.stage));
     if (existing) return report(existing, `Job already exists for issue #${issue}.`);
     const data = JSON.parse(gh(['issue', 'view', String(issue), '--json', 'number,title,body,url']));
     ({ title, body, url } = data);
   }
   if (!title || title === true) fail('Usage: create <issue-number>  |  create --title "..." [--body "..."]');
 
-  const id = issue ? `${issue}-${slugify(title)}` : `L${listJobs().filter((j) => !j.issue).length + 1}-${slugify(title)}`;
+  const idBase = issue ? `${issue}-${slugify(title)}` : `L${listJobs().filter((j) => !j.issue).length + 1}-${slugify(title)}`;
+  let id = idBase;
+  for (let n = 2; existsSync(jobDir(id)); n++) id = `${idBase}-r${n}`;
   const base = baseBranch();
   if (hasOrigin()) gitTry(['fetch', 'origin', base]);
   const baseRef = gitTry(['rev-parse', '--verify', '--quiet', `origin/${base}`]).ok ? `origin/${base}` : base;
@@ -194,7 +278,8 @@ commands.create = ({ _, flags }) => {
     const failed = setup.map((cmd) => ({ cmd, ...sh(cmd, worktree) })).filter((r) => r.code !== 0);
     if (failed.length) writeJobFile(job, 'setup-failed.md', failed.map((f) => `## \`${f.cmd}\` exited ${f.code}\n\n\`\`\`\n${tail(f.out, 60)}\n\`\`\``).join('\n\n'));
   }
-  comment(job, 'picked up. Starting intake.');
+  label(job, [LABEL_RUNNING]);
+  comment(job, `picked up. Starting intake. To answer the factory while it waits on you, comment here starting with \`${cfg.tracker.commandPrefix}\`: \`${cfg.tracker.commandPrefix} approve\`, \`${cfg.tracker.commandPrefix} reject <why>\`, or \`${cfg.tracker.commandPrefix} <your answer or feedback>\`.`);
   report(job, `Created job ${id} on branch ${branch}.`);
 };
 
@@ -203,7 +288,11 @@ commands.intake = ({ _, flags }) => {
   requireStage(job, 'intake');
   const { decision, risk, reason } = flags;
   const pain = flags.pain || 'low';
-  if (!['accept', 'reject', 'needs-info'].includes(decision)) fail('--decision must be accept, reject or needs-info');
+  if (!['accept', 'reject', 'needs-info', 'split'].includes(decision)) fail('--decision must be accept, reject, needs-info or split');
+  if (decision === 'split') {
+    transition(job, 'decompose', reason || 'Too big for one job');
+    return report(job, 'Too big for one job. It will be split into tickets.');
+  }
   if (decision === 'reject') {
     transition(job, 'rejected', reason || 'Rejected at intake');
     cleanupWorktree(job);
@@ -227,6 +316,34 @@ commands.intake = ({ _, flags }) => {
   transition(job, plan.design ? 'design' : 'spec', reason);
   comment(job, `accepted as a **${type}**. Risk **${risk}**, touches: ${surfaces.join(', ') || 'nothing flagged'}. Pipeline: ${plan.stages.join(' → ')}.`);
   report(job, 'Accepted.');
+};
+
+commands.split = ({ _ }) => {
+  const job = loadJob(_[0]);
+  requireStage(job, 'decompose');
+  const file = join(jobDir(job.id), 'tickets.json');
+  if (!existsSync(file)) fail(`tickets.json is missing from ${jobDir(job.id)}. The decompose agent must write it.`);
+  let tickets;
+  try { tickets = JSON.parse(readFileSync(file, 'utf8')); } catch (e) { fail(`tickets.json is not valid JSON: ${e.message}`); }
+  const { problems, order } = validateTickets(tickets);
+  if (problems.length) fail(`tickets.json needs fixing:\n${problems.map((p) => `  - ${p}`).join('\n')}`);
+  if (!job.issue || !GH_ENABLED) fail(`Splitting creates tickets in the ticket tracker, and this job has none to hang them from. Run: ${SELF} block ${job.id} --reason "Too big for one job; file it as a GitHub issue so it can be split."`);
+  // Created in dependency order, and remembered as we go so a retry never files a ticket twice.
+  job.children = job.children || {};
+  for (const key of order) {
+    if (job.children[key]) continue;
+    const t = tickets.find((x) => x.key === key);
+    const deps = t.dependsOn.map((d) => `#${job.children[d]}`);
+    const body = `${t.body.trim()}\n\n---\nPart of #${job.issue}.${deps.length ? `\nDepends on ${deps.join(', ')}` : ''}`;
+    const url = gh(['issue', 'create', '--title', t.title, '--label', cfg.label, '--body-file', '-'], { input: body }).split(/\r?\n/).pop();
+    job.children[key] = Number(url.split('/').pop());
+    saveJob(job);
+  }
+  comment(job, `too big for one job, so it was split into ${order.map((k) => `#${job.children[k]}`).join(', ')}. They are built in dependency order; this ticket stays open to track them.`);
+  ghTry(['issue', 'edit', String(job.issue), '--remove-label', cfg.label]);
+  transition(job, 'split', `split into ${order.length} tickets`);
+  cleanupWorktree(job);
+  report(job, `Split into ${order.length} tickets.`);
 };
 
 commands['design-done'] = ({ _ }) => {
@@ -615,6 +732,7 @@ commands.help = () => say(`Factory job control. The only writer of factory/jobs/
   queue                                   What is running, what is waiting, what to start
   create <issue#> | --title "..."         Start a job from a GitHub issue, or a local job
   intake <job> --decision --type --risk --pain --surfaces --reason
+  split <job>                             File the tickets a decompose run proposed, in dependency order
   design-done <job>                       Design is written
   spec-done <job>                         Spec is written; it goes to the spec check
   grill <job> --result <clear|revise|ask> Record the spec check (may stop for answers or plan review)

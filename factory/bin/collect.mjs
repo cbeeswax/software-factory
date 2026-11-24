@@ -8,6 +8,11 @@
 //       every .md file becomes an issue (first line is the title), then moves to <dir>/done
 //   { "type": "command", "name": "posthog", "cmd": "node scripts/posthog-errors.mjs" }
 //       any command that prints a JSON array of { "key", "title", "body" }
+//   { "type": "ratchet", "name": "strict-null-checks", "listFile": "lint-exceptions.txt", "check": "npm run lint:strict" }
+//       migrating to a stricter check one file at a time: each run takes the first path off the
+//       exception list and files one ticket for it, and files nothing while one is still open
+//
+// A problem that is reported again after its ticket was closed reopens that ticket.
 //
 // New issues get the `collect.label` label (default factory:triage) so a human decides what the
 // factory builds. Set `collect.autoQueue` to true to label them for the factory straight away.
@@ -55,15 +60,33 @@ function fromCommand(src) {
   return JSON.parse(r.out.slice(start)).map((i) => ({ ...i, key: `${src.name || 'command'}:${i.key}` }));
 }
 
-const readers = { sentry: fromSentry, inbox: fromInbox, command: fromCommand };
+function fromRatchet(src) {
+  const file = resolve(ROOT, src.listFile);
+  if (!existsSync(file)) throw new Error(`Ratchet list not found: ${src.listFile}`);
+  const paths = readFileSync(file, 'utf8').split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+  if (!paths.length) return [];
+  // One at a time: small pull requests keep human review cheap.
+  if (!dryRun && find(`ratchet:${src.name}:`, 'open')) return [];
+  const path = paths[0];
+  return [{
+    key: `ratchet:${src.name}:${path}`,
+    recurring: false,
+    title: `Ratchet ${src.name}: ${path}`,
+    body: [`Part of the migration to a stricter check, **${src.name}**. ${paths.length} file(s) are still on the exception list.`, '', `1. Fix \`${path}\` so it passes${src.check ? ` \`${src.check}\`` : ' the stricter check'} with no suppressions.`, `2. Remove \`${path}\` from \`${src.listFile}\`.`, '3. Change nothing else. Behaviour must stay the same.'].join('\n'),
+  }];
+}
 
-function alreadyFiled(key) {
-  const r = ghTry(['issue', 'list', '--state', 'all', '--search', `"Factory-Source: ${key}" in:body`, '--json', 'number', '--limit', '1']);
+const readers = { sentry: fromSentry, inbox: fromInbox, command: fromCommand, ratchet: fromRatchet };
+
+/** The ticket already filed for this key, if any. This is what stops a source filing the same ticket twice. */
+function find(key, state = 'all') {
+  const r = ghTry(['issue', 'list', '--state', state, '--search', `"Factory-Source: ${key}" in:body`, '--json', 'number,state', '--limit', '1']);
   if (!r.ok) throw new Error(`Could not search existing issues: ${r.err}`);
-  return JSON.parse(r.out).length > 0;
+  return JSON.parse(r.out)[0] || null;
 }
 
 const created = [];
+const reopened = [];
 const skipped = [];
 const errors = [];
 for (const src of cfg.collect.sources) {
@@ -72,7 +95,16 @@ for (const src of cfg.collect.sources) {
     if (!readers[src.type]) throw new Error(`Unknown source type "${src.type}"`);
     for (const item of await readers[src.type](src)) {
       if (created.length >= cfg.collect.maxPerRun) break;
-      if (!dryRun && alreadyFiled(item.key)) { skipped.push(item.key); continue; }
+      const existing = dryRun ? null : find(item.key);
+      if (existing) {
+        // The fix merged and the problem is still being reported: the ticket goes back in the queue.
+        const recurring = item.recurring ?? (src.type === 'sentry' || src.type === 'command');
+        if (existing.state === 'CLOSED' && recurring && src.reopen !== false) {
+          gh(['issue', 'reopen', String(existing.number), '--comment', `Still being reported after this ticket was closed.\n\n${item.body}`]);
+          reopened.push({ key: item.key, number: existing.number });
+        } else skipped.push(item.key);
+        continue;
+      }
       if (dryRun) { created.push({ key: item.key, title: item.title, dryRun: true }); continue; }
       const labels = [cfg.collect.label, ...(cfg.collect.autoQueue ? [cfg.label] : [])];
       for (const l of labels) ghTry(['label', 'create', l, '--color', 'BFD4F2']);
@@ -85,6 +117,6 @@ for (const src of cfg.collect.sources) {
   }
 }
 
-console.log(JSON.stringify({ sources: cfg.collect.sources.length, created, skipped, errors }, null, 2));
+console.log(JSON.stringify({ sources: cfg.collect.sources.length, created, reopened, skipped, errors }, null, 2));
 if (!cfg.collect.sources.length) console.log('No sources configured. Add them under "collect.sources" in factory/factory.config.json.');
 process.exit(errors.length ? 1 : 0);

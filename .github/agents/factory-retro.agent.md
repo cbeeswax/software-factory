@@ -21,6 +21,7 @@ The orchestrator gives you a job id and a job directory. This is the usual case.
    - **Already known.** An existing lesson covers it, and it happened anyway. Run `node factory/bin/job.mjs lesson seen <id> --job <job>`. This matters as much as a new lesson: a lesson that keeps being ignored has to become a rule the gate enforces.
    - **New and reusable.** It would have been prevented by knowing something about this codebase or this kind of task, and it could happen again on a different job. Add a lesson.
    - **A one-off.** A typo, a flaky test, something specific to this one request. Record nothing. A memory full of one-offs is ignored.
+   - **Friction in the environment.** The agent had to work around something: a check with no clear command, a missing test database, no way to see the running app, a convention the code itself breaks. Advice will not fix that. Note it for the proposals file in mode 2 as a change to the environment: a narrower interface, a lint rule that forces the right thing, a data source the agents can read, the broken convention fixed at its cause.
    - **The factory's fault.** A reviewer failed good work, the gate blocked something legitimate, a rule escalated what no human needed to see. That is not a lesson for the agents; note it for the proposals file in mode 2.
 5. Finish with `RESULT: lessons=<added> repeated=<marked seen> skipped=<one-offs>`.
 
@@ -50,6 +51,7 @@ No job id is given. Look across all jobs for what no single job shows.
 Write `factory/retro-proposals.md` with changes to the factory itself. For each: the evidence (job ids and numbers), the exact change, and what it should improve.
 
 - **Every lesson in `lessonsToPromote` needs a proposal** to enforce it in code: a lint rule, a check in `factory.config.json`, a pattern in the slop scan, a required section in the spec. Advice that has failed three times will fail a fourth.
+- **Friction comes before features.** If agents keep working around the same obstacle, propose removing the obstacle: constrain the interface, add the lint rule, give them the log or the browser, fix the convention. For a TypeScript codebase where module boundaries keep being crossed, propose enforcing them with a dependency rule (the `setup-ts-deep-modules` skill sets this up) and adding it to the gate's checks.
 - A reviewer that fails far more than the others, or whose failures are resolved next round with no real code change, needs its instructions or its model changed.
 - A human who approves a kind of escalation unchanged every time is being asked a question the factory could answer: narrow the rule.
 - A human who sends work back after every agent approved it found something no agent checked: say which reviewer should have, and what to add.

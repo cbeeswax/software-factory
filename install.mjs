@@ -25,7 +25,7 @@ mkdirSync(join(target, '.claude/agents'), { recursive: true });
 for (const f of readdirSync(join(src, '.claude/agents')).filter((n) => n.startsWith('factory-'))) copy(`.claude/agents/${f}`);
 mkdirSync(join(target, '.github/agents'), { recursive: true });
 for (const f of readdirSync(join(src, '.github/agents')).filter((n) => n.startsWith('factory-'))) copy(`.github/agents/${f}`);
-for (const rel of ['factory/bin', 'factory/lib', 'factory/dashboard', 'factory/REVIEW_CONTRACT.md']) copy(rel);
+for (const rel of ['factory/bin', 'factory/lib', 'factory/dashboard', 'factory/REVIEW_CONTRACT.md', 'factory/DESIGN.md']) copy(rel);
 
 // Files the project owns once installed: create them, never overwrite them.
 if (!existsSync(join(target, 'factory/factory.config.json'))) {
@@ -78,7 +78,7 @@ for (const name of ['CLAUDE.md', 'AGENTS.md']) {
 let labels = 'skipped';
 if (!flags.has('--no-labels')) {
   try {
-    for (const [name, color, desc] of [['factory', '1D76DB', 'Queued for the software factory'], ['factory:triage', 'BFD4F2', 'Filed by the factory collector; a human decides whether to build it']]) {
+    for (const [name, color, desc] of [['factory', '1D76DB', 'Queued for the software factory'], ['factory:triage', 'BFD4F2', 'Filed by the factory collector; a human decides whether to build it'], ['factory:running', 'FBCA04', 'A factory is working on this ticket'], ['factory:needs-human', 'D93F0B', 'The factory is waiting on a person']]) {
       execFileSync('gh', ['label', 'create', name, '--color', color, '--description', desc, '--force'], { cwd: target, stdio: 'ignore' });
     }
     labels = 'created';

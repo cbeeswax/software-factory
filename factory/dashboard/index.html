@@ -65,7 +65,7 @@
   <div class="dbody"><nav class="files" id="d-files" aria-label="Job files"></nav><pre id="d-text"></pre></div>
 </dialog>
 <script>
-const COLUMNS = [['intake','Intake'],['design','Design'],['spec','Spec'],['grill','Spec check'],['build','Build'],['gate','Gate'],['review','Review'],['approve','Approve'],['needs-human','Needs human'],['merged','Merged'],['rejected','Rejected']];
+const COLUMNS = [['intake','Intake'],['decompose','Split'],['design','Design'],['spec','Spec'],['grill','Spec check'],['build','Build'],['gate','Gate'],['review','Review'],['approve','Approve'],['needs-human','Needs human'],['merged','Merged'],['rejected','Rejected'],['split','Split into tickets']];
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
 const dur = (ms) => { const s = Math.round(ms / 1000); if (s < 60) return s + 's'; const m = Math.floor(s / 60); return m < 60 ? m + 'm' : Math.floor(m / 60) + 'h ' + (m % 60) + 'm'; };
 const dlg = document.getElementById('dlg');
@@ -129,7 +129,7 @@ async function refresh() {
       col.append(cards);
       return col;
     }));
-    const running = s.jobs.filter((j) => !['merged', 'rejected', 'needs-human'].includes(j.stage)).length;
+    const running = s.jobs.filter((j) => !['merged', 'rejected', 'split', 'needs-human'].includes(j.stage)).length;
     const set = (id, label, value) => { const e = document.getElementById(id); e.replaceChildren(document.createTextNode(label + ' '), el('b', '', value)); };
     set('s-running', 'Running', running + ' of ' + s.concurrency);
     set('s-merged', 'Merged', s.stats.merged + ' (' + s.stats.autoMerged + ' auto, ' + s.stats.humanMerged + ' human)');
