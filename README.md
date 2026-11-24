@@ -289,4 +289,4 @@ npm test
 
 ## License
 
-[MIT](LICENSE)
+Public domain. No copyright is claimed: anyone may use, copy, change and distribute this for any purpose, with no conditions. See [LICENSE](LICENSE) (the Unlicense).

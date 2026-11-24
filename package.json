@@ -2,7 +2,7 @@
   "name": "software-factory",
   "version": "0.1.0",
   "description": "An agentic software factory for Claude Code: GitHub issues in, reviewed pull requests out.",
-  "license": "MIT",
+  "license": "Unlicense",
   "repository": {
     "type": "git",
     "url": "https://github.com/cbeeswax/software-factory.git"
