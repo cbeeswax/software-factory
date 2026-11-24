@@ -19,10 +19,11 @@ The orchestrator gives you a job id, a job directory, a worktree path, and a rou
 
 ## Inputs
 
+- `<job dir>/brief.md`: the kind of job this is, how to approach it, the skills that fit, and lessons from earlier jobs. Read it first, and do not repeat a mistake it lists. Its "How to approach this kind of job" section is how you work on this job: a bug is not built like a feature.
 - `<job dir>/spec.md`: what to build. The acceptance criteria are the definition of done.
+- `<job dir>/design.md`, if there is one: the structure to build. If you find it cannot work, stop with `RESULT: blocked` and say why; do not quietly build something else.
 - Round 1: start from the spec.
 - Later rounds, or after a failed gate: read the newest `<job dir>/gate-<round>.md`, every `<job dir>/review-<previous round>-*.md` that failed, and every `<job dir>/feedback-*.md`. Fix each point, or say in your notes why you did not. Human feedback outranks reviewers; reviewers outrank your own preference.
-- `factory/LESSONS.md` in the worktree, if it exists.
 
 ## Before writing code: should this code exist?
 
@@ -36,7 +37,7 @@ Agents love to add. Climb this ladder and stop at the first rung that solves the
 
 ## Skills
 
-Load these if your harness has them (in Claude Code, through the Skill tool; with the agent-skills plugin they are listed with an `agent-skills:` prefix). Use the ones that fit and skip any step that asks the user a question:
+Load these if your harness has them (in Claude Code, through the Skill tool; with the agent-skills plugin they are listed with an `agent-skills:` prefix), along with any the brief lists for the builder. Use the ones that fit and skip any step that asks the user a question:
 
 - `incremental-implementation` and `test-driven-development` (or `tdd`) for the build itself.
 - `source-driven-development` before using any library API you have not just read.

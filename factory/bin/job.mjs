@@ -5,11 +5,11 @@
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import {
-  RISKS, SURFACES, TERMINAL, afterGrill, afterReviews, computeStats, decideApproval, formatDuration, needsPlanReview,
-  route, scanDiff, slugify, stageDurations, usageTotals,
+  LESSON_AGENTS, RISKS, SURFACES, TERMINAL, TYPES, addLesson, afterGrill, afterReviews, computeStats, decideApproval, formatDuration,
+  lessonsToPromote, markSeen, planJob, renderBrief, renderLessons, scanDiff, slugify, stageDurations, usageTotals,
 } from '../lib/core.mjs';
 import {
-  GH_ENABLED, ROOT, gh, ghTry, git, gitTry, jobDir, jobFiles, listJobs, loadConfig, loadJob, saveJob, sh, writeJobFile,
+  GH_ENABLED, ROOT, gh, ghTry, git, gitTry, jobDir, jobFiles, listJobs, loadConfig, loadJob, loadLessons, saveJob, saveLessons, sh, writeJobFile,
 } from '../lib/env.mjs';
 import { detectSetup, runChecks, tail } from '../lib/checks.mjs';
 
@@ -37,6 +37,14 @@ function transition(job, stage, note) {
   if (job.stage !== stage) job.prevStage = job.stage;
   job.stage = stage;
   job.history.push({ stage, at: new Date().toISOString(), ...(note ? { note } : {}) });
+  // A finished job that went wrong somewhere owes the factory a lesson.
+  if (TERMINAL.includes(stage)) job.learn = (job.mistakes || []).length ? 'pending' : 'none';
+}
+
+/** Every failure along the way is kept: this is the raw material the factory learns from. */
+function recordMistake(job, stage, kind, detail) {
+  job.mistakes = job.mistakes || [];
+  job.mistakes.push({ stage, kind, detail: String(detail || '').slice(0, 500), round: job.round, at: new Date().toISOString() });
 }
 
 function requireStage(job, ...stages) {
@@ -81,7 +89,9 @@ function nextHint(job) {
   const ctx = `Job dir: ${dir} | Worktree: ${job.worktree} | Round: ${job.round}`;
   switch (job.stage) {
     case 'intake':
-      return `NEXT: delegate to agent "factory-intake" (model ${cfg.models.intake}). ${ctx}\n      then: ${SELF} intake ${job.id} --decision <accept|reject|needs-info> --risk <low|medium|high> --pain <low|high> --surfaces <csv of ${SURFACES.join(',')}> --reason "<one line>"`;
+      return `NEXT: delegate to agent "factory-intake" (model ${cfg.models.intake}). ${ctx}\n      then: ${SELF} intake ${job.id} --decision <accept|reject|needs-info> --risk <low|medium|high> --type <${TYPES.join('|')}> --pain <low|high> --surfaces <csv of ${SURFACES.join(',')}> --reason "<one line>"`;
+    case 'design':
+      return `NEXT: delegate to agent "factory-design" (model ${cfg.models.design}). ${ctx}\n      then: ${SELF} design-done ${job.id}`;
     case 'spec':
       return `NEXT: delegate to agent "factory-spec" (model ${cfg.models.spec}). ${ctx} | Spec round: ${job.specRound}\n      then: ${SELF} spec-done ${job.id}`;
     case 'grill':
@@ -100,12 +110,18 @@ function nextHint(job) {
     case 'needs-human':
       return `WAITING ON HUMAN (${job.waitingFor || 'guidance'}): ${job.blockedReason || 'no reason recorded'}\n      human says go:      ${SELF} approve-human ${job.id}\n      human wants changes: ${SELF} feedback ${job.id} "<what they said>"\n      human says drop it:  ${SELF} reject ${job.id} --reason "<why>"`;
     default:
+      if (job.learn === 'pending') return `DONE: job is ${job.stage}, and it made ${job.mistakes.length} mistake(s) along the way.\n      NEXT: delegate to agent "factory-retro" (model ${cfg.models.approver}). ${ctx}\n      then: ${SELF} learned ${job.id}`;
       return `DONE: job is ${job.stage}.`;
   }
 }
 
+function writeBrief(job) {
+  if (!TERMINAL.includes(job.stage)) writeJobFile(job, 'brief.md', renderBrief(job, loadLessons(), cfg));
+}
+
 function report(job, headline) {
   saveJob(job);
+  writeBrief(job);
   say(`${headline}\n[${job.id}] stage=${job.stage} round=${job.round}\n${nextHint(job)}`);
 }
 
@@ -131,6 +147,7 @@ commands.queue = () => {
     concurrency: cfg.concurrency,
     freeSlots: slots,
     running: running.map((j) => ({ id: j.id, stage: j.stage, round: j.round, next: nextHint(j) })),
+    toLearn: jobs.filter((j) => j.learn === 'pending').map((j) => ({ id: j.id, mistakes: j.mistakes.length, next: nextHint(j) })),
     needsHuman: active.filter((j) => j.stage === 'needs-human').map((j) => ({ id: j.id, title: j.title, reason: j.blockedReason })),
     pendingIssues: pending,
     startNow: pending.slice(0, slots).map((i) => `${SELF} create ${i.number}`),
@@ -167,7 +184,7 @@ commands.create = ({ _, flags }) => {
   const job = {
     id, issue, url, title, source: issue ? 'issue' : 'local', branch, base, baseRef, worktree,
     stage: 'intake', prevStage: null, waitingFor: null, round: 1, specRound: 1, risk: null, pain: null, surfaces: [], reviewers: [],
-    verdicts: {}, gateFailures: 0, usage: [], pr: null, createdAt: now, updatedAt: now,
+    type: null, plan: null, mistakes: [], learn: null, verdicts: {}, gateFailures: 0, usage: [], pr: null, createdAt: now, updatedAt: now,
     history: [{ stage: 'intake', at: now }],
   };
   writeJobFile(job, 'issue.md', `# ${title}\n\n${url ? `${url}\n\n` : ''}${body || '(no description)'}`);
@@ -199,21 +216,32 @@ commands.intake = ({ _, flags }) => {
     return report(job, 'Blocked for more information.');
   }
   if (!RISKS.includes(risk)) fail(`--risk must be one of ${RISKS.join(', ')}`);
+  const type = flags.type;
+  if (!TYPES.includes(type)) fail(`--type must be one of ${TYPES.join(', ')}`);
   if (!['low', 'high'].includes(pain)) fail('--pain must be low or high');
   const surfaces = String(flags.surfaces || '').split(',').map((s) => s.trim()).filter(Boolean);
   const unknown = surfaces.filter((s) => !SURFACES.includes(s));
   if (unknown.length) fail(`Unknown surfaces: ${unknown.join(', ')}. Allowed: ${SURFACES.join(', ')}`);
-  Object.assign(job, { risk, pain, surfaces, reviewers: route({ risk, surfaces }, cfg), planReview: needsPlanReview({ risk, pain }, cfg) });
-  transition(job, 'spec', reason);
-  comment(job, `accepted. Risk **${risk}**, surfaces: ${surfaces.join(', ') || 'none'}. Reviewers: ${job.reviewers.map((r) => r.name).join(', ')}.${job.planReview ? ' A human will review the plan before any code is written.' : ''}`);
+  const plan = planJob({ type, risk, pain, surfaces }, cfg);
+  Object.assign(job, { type, risk, pain, surfaces, reviewers: plan.reviewers, planReview: plan.planReview, plan: { design: plan.design, specCheck: plan.specCheck, autoMerge: plan.autoMerge, approach: plan.approach, skills: plan.skills, stages: plan.stages } });
+  transition(job, plan.design ? 'design' : 'spec', reason);
+  comment(job, `accepted as a **${type}**. Risk **${risk}**, touches: ${surfaces.join(', ') || 'nothing flagged'}. Pipeline: ${plan.stages.join(' → ')}.`);
   report(job, 'Accepted.');
+};
+
+commands['design-done'] = ({ _ }) => {
+  const job = loadJob(_[0]);
+  requireStage(job, 'design');
+  if (!existsSync(join(jobDir(job.id), 'design.md'))) fail(`design.md is missing from ${jobDir(job.id)}. The design agent must write it.`);
+  transition(job, 'spec');
+  report(job, 'Design written.');
 };
 
 commands['spec-done'] = ({ _ }) => {
   const job = loadJob(_[0]);
   requireStage(job, 'spec');
   if (!existsSync(join(jobDir(job.id), 'spec.md'))) fail(`spec.md is missing from ${jobDir(job.id)}. The spec agent must write it.`);
-  if (cfg.specReview) {
+  if (job.plan ? job.plan.specCheck : cfg.specReview) {
     transition(job, 'grill');
     return report(job, 'Spec written. It goes to the spec check next.');
   }
@@ -238,6 +266,7 @@ commands.grill = ({ _, flags }) => {
   const file = 'grill-' + job.specRound + '.md';
   if (!existsSync(join(jobDir(job.id), file))) fail(file + ' is missing from ' + jobDir(job.id) + '. The spec check agent must write it.');
   const next = afterGrill(job, flags.result, cfg);
+  if (flags.result !== 'clear') recordMistake(job, 'spec', flags.result === 'ask' ? 'spec-open-question' : 'spec-gap', flags.summary === true ? file : flags.summary || file);
   if (next.stage === 'spec') {
     job.specRound = next.specRound;
     transition(job, 'spec', 'spec has gaps: see ' + file);
@@ -299,6 +328,7 @@ commands.gate = ({ _ }) => {
     return report(job, 'Gate PASSED.');
   }
   job.gateFailures += 1;
+  recordMistake(job, 'build', 'gate-failure', problems.map((p) => p.split('\n')[0]).join(' | '));
   if (job.gateFailures > cfg.maxGateFailures) {
     blockJob(job, `The gate has failed ${job.gateFailures} times. See gate-${job.round}.md.`);
     return report(job, 'Gate FAILED too many times.');
@@ -341,6 +371,7 @@ commands.verdict = ({ _, flags }) => {
   if (!existsSync(join(jobDir(job.id), file))) fail(`${file} is missing from ${jobDir(job.id)}. The reviewer must write its findings there first.`);
   job.verdicts[job.round] = { ...(job.verdicts[job.round] || {}), [name]: { verdict, at: new Date().toISOString(), summary: flags.summary === true ? '' : flags.summary || '' } };
 
+  if (verdict === 'fail') recordMistake(job, 'build', `review-fail:${name}`, flags.summary === true ? file : flags.summary || file);
   const result = afterReviews(job, cfg);
   if (!result.done) return report(job, `Recorded ${name}: ${verdict}. Waiting on: ${result.pending.join(', ')}.`);
   const summary = Object.entries(job.verdicts[job.round]).map(([n, v]) => `${n} ${v.verdict}`).join(', ');
@@ -435,10 +466,11 @@ commands.feedback = ({ _, flags }) => {
   if (TERMINAL.includes(job.stage)) fail(`Job ${job.id} is already ${job.stage}.`);
   const n = jobFiles(job.id).filter((f) => f.startsWith('feedback-')).length + 1;
   writeJobFile(job, `feedback-${n}.md`, `# Human feedback ${n}\n\nGiven while the job was in: ${job.stage}${job.blockedReason ? ` (${job.blockedReason})` : ''}\n\n${text}`);
+  recordMistake(job, job.stage === 'needs-human' ? job.prevStage : job.stage, job.waitingFor === 'answers' ? 'human-answer' : 'human-correction', text);
   if (job.stage !== 'needs-human') return report(job, `Feedback recorded as feedback-${n}.md.`);
   const prev = job.prevStage;
   const to = flags.to || (prev === 'approve' || prev === 'review' || prev === 'gate' ? 'build' : prev === 'grill' ? 'spec' : prev);
-  if (!['intake', 'spec', 'build'].includes(to)) fail(`Cannot resume into "${to}". Use --to intake, spec or build.`);
+  if (!['intake', 'design', 'spec', 'build'].includes(to)) fail(`Cannot resume into "${to}". Use --to intake, design, spec or build.`);
   if (to === 'build' && (prev === 'approve' || prev === 'review')) job.round += 1;
   if (to === 'build') job.gateFailures = 0;
   if (to === 'spec' && existsSync(join(jobDir(job.id), 'grill-' + job.specRound + '.md'))) job.specRound += 1;
@@ -507,13 +539,56 @@ commands.list = ({ flags }) => {
   for (const j of jobs) say(`${j.stage.padEnd(12)} ${j.id.padEnd(44)} risk=${(j.risk || '?').padEnd(6)} round=${j.round}${j.stage === 'needs-human' ? `  <- ${j.blockedReason}` : ''}`);
 };
 
-commands.stats = () => say(JSON.stringify(computeStats(listJobs()), null, 2));
+commands.stats = () => {
+  const lessons = loadLessons();
+  say(JSON.stringify({ ...computeStats(listJobs()), lessons: lessons.length, lessonsToPromote: lessonsToPromote(lessons, cfg).map((l) => ({ id: l.id, seen: l.seen, text: l.text })) }, null, 2));
+};
+
+commands.brief = ({ _ }) => { const job = loadJob(_[0]); say(renderBrief(job, loadLessons(), cfg)); };
+
+const csv = (v) => (v && v !== true ? String(v).split(',').map((s) => s.trim()).filter(Boolean) : []);
+
+commands.lesson = ({ _, flags }) => {
+  const [action, id] = _;
+  let lessons = loadLessons();
+  const job = flags.job && flags.job !== true ? loadJob(flags.job).id : undefined;
+  if (action === 'list') return say(lessons.length ? lessons.map((l) => `${l.id}  seen=${l.seen}  [${l.agents.join(',')}]${l.types.length ? ` types=${l.types.join(',')}` : ''}${l.surfaces.length ? ` surfaces=${l.surfaces.join(',')}` : ''}\n     ${l.text}`).join('\n') : 'No lessons yet.');
+  if (action === 'add') {
+    const agents = csv(flags.agents);
+    const r = addLesson(lessons, { text: flags.text, agents: agents.length ? agents : ['all'], types: csv(flags.types), surfaces: csv(flags.surfaces), job });
+    saveLessons(r.lessons, renderLessons(r.lessons, cfg));
+    return say(r.duplicate ? `That lesson already exists as ${r.lesson.id}; counted it as happening again.` : `Added lesson ${r.lesson.id}.`);
+  }
+  if (action === 'seen') {
+    lessons = markSeen(lessons, id, job).lessons;
+    saveLessons(lessons, renderLessons(lessons, cfg));
+    const l = lessons.find((x) => x.id === id);
+    return say(`Lesson ${id} has now gone wrong ${l.seen} times.${l.seen >= cfg.memory.promoteAfter ? ' Advice is not working: propose a deterministic check for it.' : ''}`);
+  }
+  if (action === 'remove') {
+    if (!lessons.some((l) => l.id === id)) fail(`No lesson ${id}`);
+    lessons = lessons.filter((l) => l.id !== id);
+    saveLessons(lessons, renderLessons(lessons, cfg));
+    return say(`Removed lesson ${id}.`);
+  }
+  fail(`Usage: lesson add --text "<what to do differently>" [--agents ${LESSON_AGENTS.join(',')}] [--types ${TYPES.join(',')}] [--surfaces <csv>] [--job <job>]
+       lesson seen <id> [--job <job>]   |   lesson remove <id>   |   lesson list`);
+};
+
+commands.learned = ({ _ }) => {
+  const job = loadJob(_[0]);
+  if (job.learn !== 'pending') fail(`Job ${job.id} has nothing waiting to be learned (learn=${job.learn}).`);
+  job.learn = 'done';
+  saveJob(job);
+  say(`Recorded: the factory has learned from ${job.id}. Commit factory/memory and factory/LESSONS.md so the lessons are shared.`);
+};
 
 commands.help = () => say(`Factory job control. The only writer of factory/jobs/<id>/job.json.
 
   queue                                   What is running, what is waiting, what to start
   create <issue#> | --title "..."         Start a job from a GitHub issue, or a local job
-  intake <job> --decision --risk --pain --surfaces --reason
+  intake <job> --decision --type --risk --pain --surfaces --reason
+  design-done <job>                       Design is written
   spec-done <job>                         Spec is written; it goes to the spec check
   grill <job> --result <clear|revise|ask> Record the spec check (may stop for answers or plan review)
   gate <job>                              Run the deterministic checks on the build
@@ -524,6 +599,9 @@ commands.help = () => say(`Factory job control. The only writer of factory/jobs/
   block <job> --reason "..."              Stop and wait for a human
   reject <job> --reason "..."             Drop the job
   usage <job> --stage --model --tokens    Record token usage for cost tracking
+  lesson add|seen|remove|list             The factory's memory of its own mistakes
+  learned <job>                           The retro for a finished job is done
+  brief <job>                             Print the job's brief: plan, approach, lessons that apply
   next <job> | status [job] | list | stats`);
 
 const [cmd = 'help', ...rest] = process.argv.slice(2);

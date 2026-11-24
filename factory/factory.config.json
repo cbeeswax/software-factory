@@ -16,6 +16,7 @@
   ],
   "models": {
     "intake": "fable",
+    "design": "opus",
     "spec": "opus",
     "grill": "opus",
     "builder": "opus",
@@ -84,7 +85,11 @@
           "security-and-hardening",
           "accessibility-engineering",
           "browser-testing-with-devtools",
-          "shipping-and-launch"
+          "shipping-and-launch",
+          "api-and-interface-design",
+          "documentation-and-adrs",
+          "performance-optimization",
+          "deprecation-and-migration"
         ]
       },
       {
@@ -98,5 +103,9 @@
   "pricing": {},
   "dashboard": {
     "port": 4317
+  },
+  "memory": {
+    "maxLessonsInBrief": 12,
+    "promoteAfter": 3
   }
 }

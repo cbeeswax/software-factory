@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  DEFAULT_CONFIG, afterGrill, afterReviews, installCommand, missingSkills, computeStats, decideApproval, globToRegExp, mergeConfig, needsPlanReview,
+  DEFAULT_CONFIG, addLesson, afterGrill, planJob, selectLessons, afterReviews, installCommand, missingSkills, computeStats, decideApproval, globToRegExp, mergeConfig, needsPlanReview,
   parseDiff, route, scanDiff, scanSecrets, slugify,
 } from '../factory/lib/core.mjs';
 
@@ -38,9 +38,50 @@ test('routing: reviewers depend on risk and surfaces', () => {
   assert.deepEqual(names({ risk: 'low', surfaces: ['auth'] }), ['code', 'qa', 'security']);
   assert.deepEqual(names({ risk: 'low', surfaces: ['pii'] }), ['code', 'qa', 'privacy']);
   assert.deepEqual(names({ risk: 'low', surfaces: ['data'] }), ['code', 'qa', 'security', 'privacy']);
-  assert.deepEqual(names({ risk: 'high', surfaces: ['ui'] }), ['code', 'qa', 'security', 'ux', 'ui', 'doubt']);
+  assert.deepEqual(names({ risk: 'high', surfaces: ['ui'] }), ['code', 'qa', 'security', 'ux', 'ui', 'doubt', 'architecture']);
   assert.equal(route({ risk: 'high', surfaces: [] }, cfg)[0].model, 'opus');
   assert.equal(route({ risk: 'low', surfaces: [] }, cfg)[0].model, 'sonnet');
+});
+
+test('routing: architecture and performance reviewers', () => {
+  const names = (j) => route(j, cfg).map((r) => r.name);
+  assert.deepEqual(names({ type: 'refactor', risk: 'low', surfaces: ['logic'] }), ['code', 'qa', 'architecture']);
+  assert.deepEqual(names({ type: 'feature', risk: 'low', pain: 'high', surfaces: [] }), ['code', 'qa', 'architecture']);
+  assert.deepEqual(names({ type: 'feature', risk: 'low', surfaces: ['perf'] }), ['code', 'qa', 'performance']);
+  assert.deepEqual(names({ type: 'docs', risk: 'low', surfaces: ['docs'] }), ['code']);
+});
+
+test('planJob: the kind of job decides the stages', () => {
+  const plan = (j) => planJob({ surfaces: [], pain: 'low', ...j }, cfg);
+  assert.equal(plan({ type: 'feature', risk: 'low' }).design, false);
+  assert.equal(plan({ type: 'feature', risk: 'medium' }).design, true);
+  assert.equal(plan({ type: 'feature', risk: 'low', pain: 'high' }).design, true);
+  assert.equal(plan({ type: 'bug', risk: 'high' }).design, false);
+  assert.equal(plan({ type: 'bug', risk: 'low' }).specCheck, true);
+  assert.equal(plan({ type: 'docs', risk: 'low' }).specCheck, false);
+  assert.equal(plan({ type: 'spike', risk: 'low' }).autoMerge, false);
+  assert.match(plan({ type: 'refactor', risk: 'low' }).approach, /Behaviour must not change/);
+  assert.deepEqual(plan({ type: 'feature', risk: 'medium' }).stages.slice(0, 4), ['intake', 'design', 'spec', 'spec check']);
+});
+
+test('memory: lessons are deduplicated, validated and selected by relevance', () => {
+  const now = '2026-01-01T00:00:00.000Z';
+  let { lessons } = addLesson([], { text: 'Run migrations with npm run db:migrate, never by hand.', agents: ['builder'], surfaces: ['data'], job: 'j1' }, now);
+  ({ lessons } = addLesson(lessons, { text: 'Every screen needs an empty state in the spec.', agents: ['spec'], types: ['feature'], surfaces: ['ui'] }, now));
+  ({ lessons } = addLesson(lessons, { text: 'Check the changelog before upgrading a dependency.', agents: ['all'] }, now));
+  const again = addLesson(lessons, { text: 'run migrations with npm run db:migrate never by hand', job: 'j2' }, now);
+  assert.equal(again.duplicate, true);
+  assert.equal(again.lessons.length, 3);
+  assert.equal(again.lessons[0].seen, 2);
+  assert.deepEqual(again.lessons[0].jobs, ['j1', 'j2']);
+  assert.throws(() => addLesson(lessons, { text: 'short' }), /full sentence/);
+  assert.throws(() => addLesson(lessons, { text: 'A long enough lesson for this test.', agents: ['janitor'] }), /Unknown tag/);
+
+  const ids = (q) => selectLessons(again.lessons, q).map((l) => l.id);
+  assert.deepEqual(ids({ type: 'bug', surfaces: ['data'] }), ['L1', 'L3'], 'most repeated first, irrelevant ones left out');
+  assert.deepEqual(ids({ type: 'feature', surfaces: ['ui'] }).sort(), ['L2', 'L3']);
+  assert.deepEqual(ids({ type: 'docs', surfaces: ['docs'] }), ['L3']);
+  assert.equal(selectLessons(again.lessons, { type: 'feature', surfaces: ['ui', 'data'] }, 1).length, 1);
 });
 
 test('plan review is required for high pain or high risk', () => {

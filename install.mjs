@@ -35,7 +35,7 @@ if (!existsSync(join(target, 'factory/factory.config.json'))) {
   writeFileSync(join(target, 'factory/factory.config.json'), `${JSON.stringify(cfg, null, 2)}\n`);
   done.push('factory/factory.config.json (new)');
 }
-if (!existsSync(join(target, 'factory/LESSONS.md'))) copy('factory/LESSONS.md');
+if (!existsSync(join(target, 'factory/memory/lessons.json'))) { mkdirSync(join(target, 'factory/memory'), { recursive: true }); writeFileSync(join(target, 'factory/memory/lessons.json'), '[]\n'); copy('factory/LESSONS.md'); done.push('factory/memory/lessons.json (new)'); }
 mkdirSync(join(target, 'factory/inbox'), { recursive: true });
 if (!existsSync(join(target, 'factory/inbox/README.md'))) copy('factory/inbox/README.md');
 

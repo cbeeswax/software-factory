@@ -24,6 +24,19 @@ export const ROOT = findRoot();
 export const FACTORY_DIR = join(ROOT, 'factory');
 export const JOBS_DIR = join(FACTORY_DIR, 'jobs');
 export const GH_ENABLED = !process.env.FACTORY_NO_GH;
+export const MEMORY_DIR = join(FACTORY_DIR, 'memory');
+const LESSONS_FILE = join(MEMORY_DIR, 'lessons.json');
+
+/** The factory's memory. Committed to the repository, so it survives clones and is shared by the team. */
+export function loadLessons() {
+  return existsSync(LESSONS_FILE) ? JSON.parse(readFileSync(LESSONS_FILE, 'utf8')) : [];
+}
+
+export function saveLessons(lessons, rendered) {
+  mkdirSync(MEMORY_DIR, { recursive: true });
+  writeFileSync(LESSONS_FILE, `${JSON.stringify(lessons, null, 2)}\n`);
+  writeFileSync(join(FACTORY_DIR, 'LESSONS.md'), rendered);
+}
 
 export function loadConfig() {
   const file = join(FACTORY_DIR, 'factory.config.json');

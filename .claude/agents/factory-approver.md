@@ -15,9 +15,8 @@ You run unattended: never ask a question.
 
 The orchestrator gives you a job id, a job directory, and a worktree path.
 
-- `issue.md`, `intake.md`, `spec.md`, every `grill-*.md`, `build-*.md`, `gate-*.md`, `review-*.md` and `feedback-*.md` in the job directory.
+- `brief.md`, `issue.md`, `intake.md`, `design.md` if present, `spec.md`, every `grill-*.md`, `build-*.md`, `gate-*.md`, `review-*.md` and `feedback-*.md` in the job directory.
 - The diff: inside the worktree, `git diff <baseRef>...HEAD` using `baseRef` from `job.json`.
-- `factory/LESSONS.md` in the worktree, if it exists.
 
 ## Recommend `merge` only when all of these hold
 

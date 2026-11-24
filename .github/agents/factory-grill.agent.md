@@ -12,7 +12,9 @@ The orchestrator gives you a job id, a job directory, a worktree path, and a spe
 
 ## Inputs
 
+- `<job dir>/brief.md`: the kind of job this is, how to approach it, the skills that fit, and lessons from earlier jobs. Read it first, and do not repeat a mistake it lists.
 - `<job dir>/issue.md`: what the person asked for, in their words.
+- `<job dir>/design.md`, if there is one: check the spec against it, and treat its open questions as candidates for a human.
 - `<job dir>/intake.md`: the agreed scope and risk.
 - `<job dir>/spec.md`: the spec under examination.
 - `<job dir>/grill-*.md` and `<job dir>/feedback-*.md`: earlier rounds. Do not re-ask a question that has been answered; check that the answer made it into the spec.

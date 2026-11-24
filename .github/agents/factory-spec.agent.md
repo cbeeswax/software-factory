@@ -10,11 +10,12 @@ The orchestrator gives you a job id, a job directory, and a worktree path. You r
 
 ## Inputs
 
+- `<job dir>/brief.md`: the kind of job this is, how to approach it, the skills that fit, and lessons from earlier jobs. Read it first, and do not repeat a mistake it lists.
 - `<job dir>/issue.md` and `<job dir>/intake.md`. The intake scope is binding: do not widen it.
+- `<job dir>/design.md`, if the job had a design stage. Its decisions are settled: build the spec on them, copy them into "Decisions that are hard to reverse", and carry its open questions into Assumptions. Do not redesign.
 - `<job dir>/grill-*.md`: the spec check's findings on an earlier draft. For the newest one, close every item under "Gaps the spec writer should close" in the spec itself, and record each recommended answer you adopt under Assumptions.
 - `<job dir>/feedback-*.md`: human feedback and answers. They override the spec check's recommendations and your previous choices.
 - The worktree: read the code this will touch. Match its existing patterns and names.
-- `factory/LESSONS.md` in the worktree, if it exists.
 
 ## Skills
 
@@ -22,7 +23,7 @@ Load these if your harness has them (in Claude Code, through the Skill tool; wit
 
 ## How much to plan
 
-Plan in proportion to how expensive a wrong decision would be. A copy change needs five lines. A schema change needs the schema written out, the migration path, and the alternatives you rejected. Do not pad a small job with ceremony, and do not wave through a decision that other code will be built on.
+The brief says what kind of job this is. A bug spec states the wrong behaviour, the intended behaviour, and how to reproduce it; a refactor spec states what must not change and how that will be proven; a spike spec states the question to answer. Plan in proportion to how expensive a wrong decision would be. A copy change needs five lines. A schema change needs the schema written out, the migration path, and the alternatives you rejected. Do not pad a small job with ceremony, and do not wave through a decision that other code will be built on.
 
 ## Output
 

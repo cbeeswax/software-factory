@@ -1,6 +1,6 @@
 # Software Factory
 
-An agentic software factory for Claude Code and GitHub Copilot. GitHub issues go in; reviewed pull requests come out. A team of specialist agents does the work, a small deterministic program decides what happens next, and a human is asked only when the stakes call for it.
+An agentic software factory for Claude Code and GitHub Copilot. GitHub issues go in; reviewed pull requests come out. A team of specialist agents does the work, a small deterministic program decides what happens next, and a human is asked only when the stakes call for it. The pipeline is chosen for each task, and the factory remembers its mistakes so the next job does not repeat them.
 
 ```
  FORWARD PRESSURE                         THE LINE                                      BACK PRESSURE
@@ -22,12 +22,23 @@ An agentic software factory for Claude Code and GitHub Copilot. GitHub issues go
 
 ## What it does
 
-1. **Intake.** An agent reads the issue against the codebase, decides whether it is worth building, narrows the scope, and rates the risk. The rating decides how much review the job gets.
-2. **Spec.** An agent writes acceptance criteria and a task plan. If the work fixes something hard to change later (a schema, a public API), a human approves the plan before any code is written.
-3. **Spec check.** A second agent grills the spec for gaps before any code is written: decisions it left open, criteria nobody could test, claims about the codebase that are not true. Gaps the code or the issue can settle go back to the spec writer. Questions only a person can answer stop the job and are put to you, each with a recommended answer.
-4. **Build.** An agent implements the spec test-first in its own git worktree, so several jobs run in parallel without touching each other or your checkout.
-5. **Gate.** No agent involved. A script runs your real checks (lint, types, tests, build) and scans the diff for committed credentials, suppressed lint rules, skipped or deleted tests, oversized files and oversized diffs. A failing build goes straight back to the builder and never reaches a reviewer.
-6. **Reviews.** Reviewers are chosen per job and run in parallel:
+1. **Intake.** An agent reads the issue against the codebase, decides whether it is worth building, narrows the scope, says what kind of job it is, and rates the risk. Code turns that into the job's plan and writes a brief every later agent reads first.
+
+   | Kind of job | How it is handled |
+   |---|---|
+   | feature | Designed first when it is risky or hard to reverse; built test-first in thin slices. |
+   | bug | No design stage. Reproduced with a failing test first, fixed at the root cause, nothing else changed. |
+   | refactor | Behaviour pinned down by tests before anything moves; an architecture reviewer always looks at it. |
+   | docs | Light pipeline, one reviewer; every statement checked against the code. |
+   | chore | Light pipeline; one thing changed at a time, the full checks prove nothing else moved. |
+   | spike | Quick experiment to answer a question; never merged without a human. |
+
+2. **Design.** For work that is risky or expensive to reverse, an agent works out how the change fits the existing system: boundaries, interfaces, data model, and the alternatives it rejected.
+3. **Spec.** An agent writes acceptance criteria and a task plan. If the work fixes something hard to change later (a schema, a public API), a human approves the plan before any code is written.
+4. **Spec check.** A second agent grills the spec for gaps before any code is written: decisions it left open, criteria nobody could test, claims about the codebase that are not true. Gaps the code or the issue can settle go back to the spec writer. Questions only a person can answer stop the job and are put to you, each with a recommended answer.
+5. **Build.** An agent implements the spec test-first in its own git worktree, so several jobs run in parallel without touching each other or your checkout.
+6. **Gate.** No agent involved. A script runs your real checks (lint, types, tests, build) and scans the diff for committed credentials, suppressed lint rules, skipped or deleted tests, oversized files and oversized diffs. A failing build goes straight back to the builder and never reaches a reviewer.
+7. **Reviews.** Reviewers are chosen per job and run in parallel:
 
    | Reviewer | Runs when | Looks for |
    |---|---|---|
@@ -36,13 +47,28 @@ An agentic software factory for Claude Code and GitHub Copilot. GitHub issues go
    | security | medium or high risk, or the job touches auth, data, APIs, infrastructure or dependencies | what an attacker could now do |
    | privacy | the job touches personal data or stored data | what the system does with people's data: collection, logs, third parties, retention, deletion |
    | ux and ui | the job touches the interface | flows, states and wording; design consistency and accessibility |
+   | architecture | refactors, high risk, or hard-to-reverse designs | boundaries, dependencies, invariants, whether the build follows the design |
+   | performance | intake flagged a hot path or cost that grows with data | regressions at realistic scale, measured where possible |
    | doubt | high risk | takes every claim the builder made and tries to prove it false |
 
    Any failure sends the job back to the builder for another round, up to a limit.
-7. **Approve.** An agent recommends merge or escalate. Then rules it cannot override apply: high risk, protected paths, and a random spot-check all force a human review.
-8. **Merge.** The pull request is merged, the worktree is removed, and the issue is closed with the full history in its comments.
+8. **Approve.** An agent recommends merge or escalate. Then rules it cannot override apply: high risk, protected paths, and a random spot-check all force a human review.
+9. **Merge.** The pull request is merged, the worktree is removed, and the issue is closed with the full history in its comments.
+10. **Learn.** If anything went wrong on the way, a retro agent works out the cause and records a lesson. See "How it learns" below.
 
-After that, `/factory collect` turns production errors and inbox notes into new issues, and `/factory retro` studies finished jobs and records what the factory should do differently. That is the loop that lets it improve.
+`/factory collect` turns production errors and inbox notes into new issues, which closes the loop.
+
+## How it learns
+
+The factory keeps a record of its own mistakes and feeds them back into later jobs.
+
+1. **Every failure is recorded as it happens.** A failed gate, a failed review, a gap the spec check found, a correction or answer from a human: the job script writes each one into the job's record. No agent has to remember to report it.
+2. **A job that made mistakes is not finished until it has been learned from.** After it merges or is rejected, the retro agent reads what went wrong, finds the cause, and decides for each mistake whether it is a one-off, something new worth remembering, or something the factory already knew and did anyway.
+3. **Lessons are stored in the repository.** `factory/memory/lessons.json` holds them, each tagged with the agents it is for and the kinds of job and areas of code it applies to. `factory/LESSONS.md` is the readable view. Commit both and the whole team's factory shares one memory.
+4. **The next job is briefed with the lessons that apply to it.** A lesson about migrations reaches the builder of the next job that touches data, and does not clutter a CSS change. The most-repeated lessons come first.
+5. **A lesson that keeps recurring becomes a rule.** When the same mistake happens three times despite the lesson, the factory flags it: advice has failed, and it should be enforced by a check in the gate. `/factory retro` writes those proposals for you to review.
+
+You can teach it directly too: `/factory lessons` lists what it knows, and `node factory/bin/job.mjs lesson add --text "..." --agents builder` adds one.
 
 ## Requirements
 
@@ -89,7 +115,8 @@ Then:
 | `/factory 12: use a separate table instead` | Your feedback is recorded and the job resumes. |
 | `/factory collect` | Files new issues from the configured sources. |
 | `/factory skills` | Checks that the agent skills are installed, and installs any that are missing. |
-| `/factory retro` | Studies finished jobs, updates `factory/LESSONS.md`, proposes factory changes. |
+| `/factory lessons` | Shows what the factory has learned. |
+| `/factory retro` | Reviews the factory as a whole and proposes changes to it, including checks for lessons that keep recurring. |
 | `/factory dashboard` | Opens the live board at http://127.0.0.1:4317. |
 
 The session where you type `/factory run` is the orchestrator. If it dies, type `/factory run` again: job state is on disk, and each job resumes from its current stage. Work an agent had in flight at that moment is redone.
@@ -150,7 +177,10 @@ Everything is in `factory/factory.config.json`.
 | `planReview` | `high-pain` | When a human approves the plan: `high-pain`, `always` or `never`. |
 | `specReview` | `true` | Run the spec check before building. |
 | `maxSpecRounds` | `2` | Times the spec writer may revise on its own before the open gaps go to a human. |
-| `routing` | see `core.mjs` | Which reviewers run for which risk levels and surfaces. |
+| `playbooks` | see `core.mjs` | Per kind of job: whether it is designed and spec-checked, how the builder approaches it, which skills fit. |
+| `routing` | see `core.mjs` | Which reviewers run for which risk levels, kinds of job and areas of code. |
+| `memory.maxLessonsInBrief` | `12` | How many lessons a job brief carries. |
+| `memory.promoteAfter` | `3` | Recurrences after which a lesson is flagged to become a check. |
 | `skills.autoInstall` | `true` | Install missing agent skills automatically. |
 | `skills.sources` | see file | Which skills the factory expects, and the repository each comes from. |
 | `checks` | auto-detected | Commands the gate runs in the job's worktree. |
@@ -193,14 +223,14 @@ This project implements the ideas in four talks, and says so where it follows on
 | A skill as orchestrator, subagents per stage, Markdown job files, a dashboard, worktrees for parallel jobs | ZazenCodes, [Build Your Own AI Software Factory with Claude Code](https://www.youtube.com/watch?v=ctoaIC4LHmI) | `.claude/skills/factory`, `.claude/agents`, `factory/dashboard` |
 | Issues in and pull requests out, an intake stage, a deterministic spine, a gate before review, routing by risk, concurrency, time and cost per job, resuming after a crash | ZazenCodes, [Build a Better Software Factory with Claude Code](https://www.youtube.com/watch?v=RiaTyJ2POVo) | `factory/bin/job.mjs`, `factory/lib/core.mjs` |
 | Collecting work from telemetry, a QA specialist, a "should this code exist" check before building, progress logged on the issue, hooks that block secrets | Eric Tech, [I Built a Self-Improving Software Factory](https://www.youtube.com/watch?v=aggJvNZxfKA) | `factory/bin/collect.mjs`, `factory-reviewer-qa`, `factory-builder`, `factory/bin/guard.mjs` |
-| Forward and back pressure, understanding the problem before building, planning in proportion to the cost of being wrong, fighting slop with deterministic rules, learning from past sessions, keeping decisions in one place, humans reviewing a subset chosen by stakes | Dex Horthy, [12 Rules for a Software Factory That Doesn't Ship Slop](https://www.youtube.com/watch?v=-NFMsM2y0Vk) | the slop gate, the spec check, plan review, `approval.auditRate`, `factory/LESSONS.md`, `factory-retro` |
+| Forward and back pressure, understanding the problem before building, planning in proportion to the cost of being wrong, fighting slop with deterministic rules, learning from past sessions, keeping decisions in one place, humans reviewing a subset chosen by stakes | Dex Horthy, [12 Rules for a Software Factory That Doesn't Ship Slop](https://www.youtube.com/watch?v=-NFMsM2y0Vk) | the slop gate, the design stage, the spec check, plan review, `approval.auditRate`, `factory/memory`, `factory-retro` |
 
 ## Before you trust it with production
 
 - **Start with `autoMerge` off**, or on a repository where a bad merge is cheap, and read what it produces. Turn automation up as it earns it.
 - **The gate is only as good as your checks.** With weak tests, the factory will ship code that passes weak tests.
 - **Issue text is untrusted input.** Agents are told to treat it as a request and not as instructions, and only issues you label are processed, but do not label an issue you have not read on a public repository.
-- **It costs tokens.** A job runs seven to twelve agents, more if it needs rework. `job.mjs status <job>` shows the time per stage and the tokens recorded.
+- **It costs tokens.** A small chore runs about five agents; a high-risk feature touching personal data runs fifteen or more, plus rework. `job.mjs status <job>` shows the time per stage and the tokens recorded.
 - **Job files are local.** `factory/jobs/` is not committed. The durable record is the issue comments and the pull request.
 - **Not yet exercised:** the Sentry source has not been run against a real account, and the GitHub Copilot path has not been run in Copilot. The Copilot agent files follow GitHub's documented format, but expect to adjust the delegation wording for your Copilot surface on the first run.
 

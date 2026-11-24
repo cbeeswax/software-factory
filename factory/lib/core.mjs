@@ -1,9 +1,11 @@
 // Pure logic for the factory: no I/O, no git, no GitHub. Everything here is unit tested.
 
-export const STAGES = ['intake', 'spec', 'grill', 'build', 'gate', 'review', 'approve', 'needs-human', 'merged', 'rejected'];
+export const STAGES = ['intake', 'design', 'spec', 'grill', 'build', 'gate', 'review', 'approve', 'needs-human', 'merged', 'rejected'];
 export const TERMINAL = ['merged', 'rejected'];
 export const RISKS = ['low', 'medium', 'high'];
-export const SURFACES = ['ui', 'api', 'data', 'pii', 'auth', 'infra', 'deps', 'docs', 'logic'];
+export const SURFACES = ['ui', 'api', 'data', 'pii', 'auth', 'infra', 'deps', 'perf', 'docs', 'logic'];
+export const TYPES = ['feature', 'bug', 'refactor', 'docs', 'chore', 'spike'];
+export const LESSON_AGENTS = ['all', 'intake', 'design', 'spec', 'grill', 'builder', 'reviewers', 'approver'];
 
 export const DEFAULT_CONFIG = {
   label: 'factory',
@@ -20,6 +22,7 @@ export const DEFAULT_CONFIG = {
   maxSpecRounds: 2,
   models: {
     intake: 'fable',
+    design: 'opus',
     spec: 'opus',
     grill: 'opus',
     builder: 'opus',
@@ -32,7 +35,49 @@ export const DEFAULT_CONFIG = {
     privacy: { surfaces: ['pii', 'data'] },
     ui: { surfaces: ['ui'], reviewers: ['ux', 'ui'] },
     doubt: { minRisk: 'high' },
+    architecture: { minRisk: 'high', pain: 'high', types: ['refactor'] },
+    performance: { surfaces: ['perf'] },
   },
+  // What kind of job it is decides how it is built. `design: 'auto'` runs the design stage when
+  // the job is not low risk or is expensive to reverse.
+  playbooks: {
+    feature: {
+      design: 'auto',
+      approach: 'Build the smallest version that meets every acceptance criterion, test-first, in thin slices that each leave the project working.',
+      skills: { design: ['api-and-interface-design', 'codebase-design'], spec: ['spec-driven-development', 'planning-and-task-breakdown'], builder: ['incremental-implementation', 'test-driven-development', 'source-driven-development'] },
+    },
+    bug: {
+      design: false,
+      approach: 'Reproduce it first. Write a failing test that captures the bug, find the root cause, and make the smallest fix that addresses the cause and not the symptom. The failing test stays as the regression test. Do not refactor or add features along the way.',
+      skills: { spec: ['debugging-and-error-recovery'], builder: ['debugging-and-error-recovery', 'diagnosing-bugs', 'test-driven-development'] },
+    },
+    refactor: {
+      design: 'auto',
+      approach: 'Behaviour must not change. Before touching the code, make sure tests pin down what it does today, and add characterisation tests where they do not. Move in small steps that keep the tests green. No new features, no fixes to bugs you find: file those separately.',
+      skills: { design: ['codebase-design', 'api-and-interface-design'], builder: ['code-simplification', 'incremental-implementation'] },
+    },
+    docs: {
+      design: false,
+      specCheck: false,
+      always: ['code'],
+      approach: 'Verify every statement against the code as it is now: run the commands, open the files. Write for the reader who has to act on it. Do not change behaviour.',
+      skills: { builder: ['documentation-and-adrs', 'humanize-writing'] },
+    },
+    chore: {
+      design: false,
+      specCheck: false,
+      approach: 'Change only what the task names. For a dependency or tool upgrade, read the changelog for breaking changes, upgrade one thing at a time, and let the full check suite prove nothing else moved.',
+      skills: { builder: ['deprecation-and-migration', 'source-driven-development'] },
+    },
+    spike: {
+      design: false,
+      specCheck: false,
+      autoMerge: false,
+      approach: 'This is an experiment to answer a question, not production code. Build the quickest thing that answers it, say clearly what you learned and what is fake or missing, and keep it behind a flag or in its own folder. A human decides whether any of it is kept.',
+      skills: { builder: ['prototype'] },
+    },
+  },
+  memory: { maxLessonsInBrief: 12, promoteAfter: 3 },
   approval: {
     autoMerge: true,
     mergeMethod: 'squash',
@@ -62,6 +107,7 @@ export const DEFAULT_CONFIG = {
           'debugging-and-error-recovery', 'frontend-ui-engineering', 'git-workflow-and-versioning',
           'code-review-and-quality', 'code-simplification', 'security-and-hardening',
           'accessibility-engineering', 'browser-testing-with-devtools', 'shipping-and-launch',
+          'api-and-interface-design', 'documentation-and-adrs', 'performance-optimization', 'deprecation-and-migration',
         ],
       },
       { source: 'mattpocock/skills', skills: ['grilling'] },
@@ -108,14 +154,18 @@ export function matchesAny(path, globs = []) {
 }
 
 /** Which reviewers a job gets, and on which model. Decided once, at intake, from risk and surfaces. */
-export function route({ risk, surfaces = [] }, cfg = DEFAULT_CONFIG) {
+export function route({ risk, surfaces = [], type = 'feature', pain = 'low' }, cfg = DEFAULT_CONFIG) {
   const r = cfg.routing;
-  const names = [...r.always];
+  const playbook = (cfg.playbooks && cfg.playbooks[type]) || {};
+  const names = [...(playbook.always || r.always)];
   const riskAtLeast = RISKS.indexOf(risk) >= RISKS.indexOf(r.security.minRisk);
   if (riskAtLeast || surfaces.some((s) => r.security.surfaces.includes(s))) names.push('security');
   if (surfaces.some((s) => r.privacy.surfaces.includes(s))) names.push('privacy');
   if (surfaces.some((s) => r.ui.surfaces.includes(s))) names.push(...r.ui.reviewers);
   if (RISKS.indexOf(risk) >= RISKS.indexOf(r.doubt.minRisk)) names.push('doubt');
+  const a = r.architecture;
+  if (RISKS.indexOf(risk) >= RISKS.indexOf(a.minRisk) || pain === a.pain || a.types.includes(type)) names.push('architecture');
+  if (surfaces.some((s) => r.performance.surfaces.includes(s))) names.push('performance');
   const model = cfg.models.reviewer[risk] || cfg.models.reviewer.medium;
   return [...new Set(names)].map((name) => ({ name, model }));
 }
@@ -185,6 +235,7 @@ export function decideApproval({ job, recommendation, files = [] }, cfg = DEFAUL
   const reasons = [];
   if (recommendation !== 'merge') reasons.push('Approver agent escalated');
   if (!a.autoMerge) reasons.push('Auto-merge is turned off');
+  if (job.plan && job.plan.autoMerge === false) reasons.push(`A ${job.type} is never merged without a human`);
   if (a.escalateRisk.includes(job.risk)) reasons.push(`Risk is ${job.risk}`);
   const touched = files.filter((f) => matchesAny(f, a.escalatePaths));
   if (touched.length) reasons.push(`Touches protected paths: ${touched.slice(0, 5).join(', ')}`);
@@ -350,4 +401,95 @@ export function computeStats(jobs) {
   }
   for (const s of Object.keys(sums)) stats.avgStageMs[s] = Math.round(sums[s] / counts[s]);
   return stats;
+}
+
+// ---------------------------------------------------------------- planning a job
+
+/**
+ * Turns intake's classification into the job's whole plan: which stages run, who reviews,
+ * how the work should be approached, and which skills fit. Decided once, in code.
+ */
+export function planJob({ type, risk, pain, surfaces = [] }, cfg = DEFAULT_CONFIG) {
+  const pb = cfg.playbooks[type] || cfg.playbooks.feature;
+  const design = pb.design === 'auto' ? pain === 'high' || risk !== 'low' : Boolean(pb.design);
+  const specCheck = Boolean(cfg.specReview) && pb.specCheck !== false;
+  const reviewers = route({ type, risk, pain, surfaces }, cfg);
+  const planReview = needsPlanReview({ risk, pain }, cfg);
+  const stages = ['intake', ...(design ? ['design'] : []), 'spec', ...(specCheck ? ['spec check'] : []), ...(planReview ? ['human plan review'] : []), 'build', 'gate', `review (${reviewers.map((r) => r.name).join(', ')})`, 'approve'];
+  return { design, specCheck, planReview, reviewers, autoMerge: pb.autoMerge !== false, approach: pb.approach, skills: pb.skills || {}, stages };
+}
+
+// ---------------------------------------------------------------- memory
+
+const norm = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+/** Adds a lesson, or strengthens the existing one if this is the same lesson again. */
+export function addLesson(lessons, { text, agents = ['all'], types = [], surfaces = [], job }, now = new Date().toISOString()) {
+  const clean = String(text || '').trim().replace(/\s+/g, ' ');
+  if (clean.length < 15) throw new Error('A lesson needs a full sentence saying what to do differently.');
+  if (clean.length > 400) throw new Error('A lesson must be under 400 characters. Agents read every one that applies.');
+  const bad = [...agents.filter((a) => !LESSON_AGENTS.includes(a)), ...types.filter((t) => !TYPES.includes(t)), ...surfaces.filter((s) => !SURFACES.includes(s))];
+  if (bad.length) throw new Error(`Unknown tag(s): ${bad.join(', ')}`);
+  const existing = lessons.find((l) => norm(l.text) === norm(clean));
+  if (existing) return { lessons: markSeen(lessons, existing.id, job, now).lessons, lesson: existing, duplicate: true };
+  const id = `L${lessons.reduce((m, l) => Math.max(m, Number(String(l.id).slice(1)) || 0), 0) + 1}`;
+  const lesson = { id, text: clean, agents, types, surfaces, jobs: job ? [job] : [], seen: 1, createdAt: now, updatedAt: now };
+  return { lessons: [...lessons, lesson], lesson, duplicate: false };
+}
+
+/** The same mistake happened again even though this lesson existed. */
+export function markSeen(lessons, id, job, now = new Date().toISOString()) {
+  if (!lessons.some((l) => l.id === id)) throw new Error(`No lesson ${id}`);
+  return { lessons: lessons.map((l) => (l.id !== id ? l : { ...l, seen: l.seen + 1, jobs: job && !l.jobs.includes(job) ? [...l.jobs, job] : l.jobs, updatedAt: now })) };
+}
+
+/** The lessons that apply to one job: matching its type and surfaces, most-repeated first. */
+export function selectLessons(lessons, { type, surfaces = [] }, limit = 12) {
+  return lessons
+    .filter((l) => (!l.types.length || !type || l.types.includes(type)) && (!l.surfaces.length || l.surfaces.some((s) => surfaces.includes(s))))
+    .sort((a, b) => b.seen - a.seen || b.updatedAt.localeCompare(a.updatedAt))
+    .slice(0, limit);
+}
+
+/** Lessons that keep recurring have stopped working as advice and should become a check. */
+export function lessonsToPromote(lessons, cfg = DEFAULT_CONFIG) {
+  return lessons.filter((l) => l.seen >= cfg.memory.promoteAfter);
+}
+
+const AGENT_LABEL = { all: 'Everyone', intake: 'Intake', design: 'Design', spec: 'Spec writer', grill: 'Spec check', builder: 'Builder', reviewers: 'Reviewers', approver: 'Approver' };
+
+function lessonLines(lessons) {
+  const out = [];
+  for (const agent of LESSON_AGENTS) {
+    const mine = lessons.filter((l) => l.agents.includes(agent));
+    if (!mine.length) continue;
+    out.push(`**${AGENT_LABEL[agent]}**`, ...mine.map((l) => `- ${l.text}${l.seen > 1 ? ` (this has gone wrong ${l.seen} times)` : ''} [${l.id}]`), '');
+  }
+  return out;
+}
+
+/** The one page every agent reads first: what kind of job this is, how to approach it, what was learned before. */
+export function renderBrief(job, lessons, cfg = DEFAULT_CONFIG) {
+  const plan = job.plan;
+  const lines = [`# Job brief: ${job.title}`, '', 'Generated by the factory from the intake decision and the factory\'s memory. Read it before anything else.', ''];
+  if (plan) {
+    lines.push(`- **Kind of job:** ${job.type}`, `- **Risk:** ${job.risk} | **Cost of reversing the design:** ${job.pain} | **Touches:** ${job.surfaces.join(', ') || 'nothing flagged'}`, `- **Pipeline:** ${plan.stages.join(' → ')}`, '', '## How to approach this kind of job', '', plan.approach, '');
+    const skills = Object.entries(plan.skills);
+    if (skills.length) lines.push('## Skills that fit this job', '', 'Load the ones for your stage if your harness has them, in addition to the ones in your own instructions.', '', ...skills.map(([agent, list]) => `- **${agent}:** ${list.map((s) => `\`${s}\``).join(', ')}`), '');
+  } else lines.push('This job has not been through intake yet.', '');
+  const picked = selectLessons(lessons, { type: job.type, surfaces: job.surfaces }, cfg.memory.maxLessonsInBrief);
+  lines.push('## Lessons from earlier jobs', '');
+  if (!picked.length) lines.push('None recorded yet that apply here.');
+  else lines.push('Each of these is a mistake this factory already made on this codebase. Do not repeat it. Read the ones for your stage and the ones for everyone.', '', ...lessonLines(picked));
+  return lines.join('\n').trimEnd() + '\n';
+}
+
+/** The human-readable view of the factory's memory. Generated; the source is lessons.json. */
+export function renderLessons(lessons, cfg = DEFAULT_CONFIG) {
+  const lines = ['# Factory lessons', '', 'What this factory has learned from its own mistakes on this codebase. Generated from `factory/memory/lessons.json`; change it with `node factory/bin/job.mjs lesson`, not by hand.', ''];
+  if (!lessons.length) lines.push('Nothing recorded yet.');
+  const promote = lessonsToPromote(lessons, cfg);
+  if (promote.length) lines.push('## Keeps happening: turn these into checks', '', ...promote.map((l) => `- ${l.text} (${l.seen} times) [${l.id}]`), '');
+  if (lessons.length) lines.push('## All lessons', '', ...lessonLines([...lessons].sort((a, b) => b.seen - a.seen)));
+  return lines.join('\n').trimEnd() + '\n';
 }
