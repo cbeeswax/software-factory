@@ -11,7 +11,7 @@ The orchestrator gives you a job id, a job directory, a worktree path, and a rou
 ## Rules that are not negotiable
 
 - Work only inside the worktree. Never touch the main checkout, never switch branches, never push, never open or merge a pull request. The factory does those.
-- Never edit `job.json` or any file in the job directory except your own `build-<round>.md`.
+- Never edit `job.json` or any file in the job directory except your own `build-<round>.md` and `pr.md`.
 - Never lower the bar to get to green. No lint or type suppressions, no skipped, focused or deleted tests, no weakened assertions, no edited thresholds. A deterministic gate scans your diff for these and will send it straight back.
 - Never write a credential into a file. Read secrets from the environment.
 - Do not change anything under `factory/` or `.claude/` unless the spec is explicitly about the factory.
@@ -80,5 +80,58 @@ What you found on the ladder above.
 ## What a human should look at
 The one or two places where your judgement could most plausibly be wrong.
 ```
+
+## The pull request description
+
+Also write `<job dir>/pr.md`. It becomes the top of the pull request, and for a local job it is what the human reads before approving. Rewrite it in full every round so it describes the change as it now stands. The gate rejects the build if the headings are missing, out of order or empty, or if a diagram is absent.
+
+Write it for someone who has not seen the issue or the code and may not be an engineer. Use these headings, in this order, exactly:
+
+````markdown
+## Summary
+
+### What
+What changes, in two or three plain sentences. Say what a person using or running the product will
+notice. No file names, no jargon.
+
+### Why
+The problem this solves or the need it meets, and who has it. If it is a bug: what was going wrong.
+
+### How
+The approach in plain words, in a few sentences or a short list: the main idea, not a tour of the
+diff. Mention any decision a reader would question, and why you made it.
+
+## Component diagram
+
+```mermaid
+flowchart LR
+  ui[Settings page]:::changed --> api[Preferences API]:::added
+  api --> store[(User store)]:::unchanged
+```
+
+## Sequence diagram
+
+```mermaid
+sequenceDiagram
+  actor User
+  User->>Settings page: turns on dark mode
+  Settings page->>Preferences API: save preference
+  Preferences API-->>Settings page: saved
+  Settings page-->>User: page switches to dark
+```
+
+## Tests
+What was tested, at a high level, as a short list a non-engineer can follow: the behaviours proven
+and how (automated test, run by hand, checked in a browser). Say plainly what was not tested.
+````
+
+Rules for the diagrams:
+
+- **Component diagram.** Show the parts of the system this change involves, at the level of modules, services, screens and data stores, not functions. Tag every component with exactly one of `:::added` (new in this change), `:::changed` (existed, modified here) or `:::unchanged` (existing, not touched, shown so the reader sees where the change connects). Always include the unchanged neighbours. Do not write `classDef` lines or a legend: the factory adds the colours and the legend so every pull request looks the same.
+- **Sequence diagram.** Show the main flow the change introduces or alters, from what starts it to the visible result, in five to ten steps. One diagram for the main path; mention failure paths in "How" or "Tests".
+- Keep labels to plain words, and keep both diagrams small enough to read without scrolling. A diagram that needs twenty boxes is describing the codebase, not the change.
+- The diagrams must be true. A reviewer will compare them with the diff.
+
+Check it before you finish: `node factory/bin/job.mjs pr-preview <job id>`.
 
 Finish with exactly one line: `RESULT: built` or `RESULT: blocked reason="<one line>"`. Use blocked only when the spec is impossible or contradictory, not when something is merely hard.

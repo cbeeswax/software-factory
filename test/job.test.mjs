@@ -9,6 +9,8 @@ import { fileURLToPath } from 'node:url';
 
 const JOB = resolve(dirname(fileURLToPath(import.meta.url)), '../factory/bin/job.mjs');
 
+const PR_DESCRIPTION = "## Summary\n\n### What\nPeople can now switch the app to a dark colour scheme from the settings page.\n\n### Why\nSeveral users asked for it because the bright screen is tiring to read at night.\n\n### How\nThe settings page saves the choice through a new preferences service, and the page reads it on load.\n\n## Component diagram\n\n```mermaid\nflowchart LR\n  ui[Settings page]:::changed --> api[Preferences service]:::added\n  api --> store[(User store)]:::unchanged\n```\n\n## Sequence diagram\n\n```mermaid\nsequenceDiagram\n  actor User\n  User->>Settings page: turns on dark mode\n  Settings page-->>User: page switches to dark\n```\n\n## Tests\n- Saving and reading the preference: automated tests.\n- Switching themes in the browser: checked by hand.\n";
+
 function makeRepo(config = {}) {
   const root = mkdtempSync(join(tmpdir(), 'factory-test-'));
   const g = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' });
@@ -36,6 +38,7 @@ function makeRepo(config = {}) {
   const jobFile = (id, name, text) => writeFileSync(join(root, 'factory', 'jobs', id, name), text);
   const commit = (id, file, text, msg = 'work') => {
     const wt = state(id).worktree;
+    jobFile(id, 'pr.md', PR_DESCRIPTION);
     writeFileSync(join(wt, file), text);
     execFileSync('git', ['add', '-A'], { cwd: wt });
     execFileSync('git', ['commit', '-q', '-m', msg], { cwd: wt });
@@ -368,5 +371,32 @@ test('memory: mistakes are recorded, a lesson is learned, and the next job is br
     assert.match(r.job('lesson', 'seen', 'L1').out, /gone wrong 3 times\. Advice is not working/);
     assert.equal(JSON.parse(r.job('stats').out).lessonsToPromote[0].id, 'L1');
     assert.match(readFileSync(join(r.root, 'factory', 'LESSONS.md'), 'utf8'), /Keeps happening: turn these into checks/);
+  } finally { r.cleanup(); }
+});
+
+test('the gate requires a pull request description in the fixed format', () => {
+  const r = makeRepo();
+  try {
+    const id = toBuild(r, 'Describe yourself');
+    specDone(r, id);
+    r.commit(id, 'a.txt', 'v1\n');
+    const gateFile = () => readFileSync(join(r.root, 'factory', 'jobs', id, 'gate-1.md'), 'utf8');
+
+    rmSync(join(r.root, 'factory', 'jobs', id, 'pr.md'));
+    assert.match(r.job('gate', id).out, /Gate FAILED/);
+    assert.match(gateFile(), /pr\.md is missing/);
+    assert.equal(r.job('pr-preview', id).code, 1);
+
+    r.jobFile(id, 'pr.md', PR_DESCRIPTION.replace('### Why', '### Reason'));
+    r.job('gate', id);
+    assert.match(gateFile(), /Missing the "### Why" heading/);
+
+    r.jobFile(id, 'pr.md', PR_DESCRIPTION.replaceAll(':::unchanged', ''));
+    r.job('gate', id);
+    assert.match(gateFile(), /shows no unchanged component/);
+
+    r.jobFile(id, 'pr.md', PR_DESCRIPTION);
+    assert.match(r.job('gate', id).out, /Gate PASSED/);
+    assert.deepEqual(r.state(id).lastGate.checks.map((c) => [c.cmd, c.pass]), [['node check.js', true]]);
   } finally { r.cleanup(); }
 });

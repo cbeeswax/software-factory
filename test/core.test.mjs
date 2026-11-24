@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  DEFAULT_CONFIG, addLesson, afterGrill, planJob, selectLessons, afterReviews, installCommand, missingSkills, computeStats, decideApproval, globToRegExp, mergeConfig, needsPlanReview,
+  DEFAULT_CONFIG, PR_SECTIONS, addLesson, finishPrDescription, validatePrDescription, afterGrill, planJob, selectLessons, afterReviews, installCommand, missingSkills, computeStats, decideApproval, globToRegExp, mergeConfig, needsPlanReview,
   parseDiff, route, scanDiff, scanSecrets, slugify,
 } from '../factory/lib/core.mjs';
 
@@ -222,4 +222,41 @@ test('computeStats summarises jobs for a retro', () => {
   assert.equal(s.reworkRounds, 1);
   assert.deepEqual(s.reviewerFails, { code: 1 });
   assert.deepEqual(s.blockedReasons, { 'Risk is high': 1 });
+});
+
+const PR_OK = "## Summary\n\n### What\nPeople can now switch the app to a dark colour scheme from the settings page.\n\n### Why\nSeveral users asked for it because the bright screen is tiring to read at night.\n\n### How\nThe settings page saves the choice through a new preferences service, and the page reads it on load.\n\n## Component diagram\n\n```mermaid\nflowchart LR\n  ui[Settings page]:::changed --> api[Preferences service]:::added\n  api --> store[(User store)]:::unchanged\n```\n\n## Sequence diagram\n\n```mermaid\nsequenceDiagram\n  actor User\n  User->>Settings page: turns on dark mode\n  Settings page-->>User: page switches to dark\n```\n\n## Tests\n- Saving and reading the preference: automated tests.\n- Switching themes in the browser: checked by hand.\n";
+
+test('pull request description: a complete one is valid', () => {
+  assert.deepEqual(validatePrDescription(PR_OK), []);
+  assert.deepEqual(validatePrDescription(PR_OK.replace(/\n/g, '\r\n')), [], 'Windows line endings are fine');
+});
+
+test('pull request description: missing, empty and misordered sections are reported', () => {
+  for (const h of PR_SECTIONS) assert.match(validatePrDescription(PR_OK.replace(h, '## Something else')).join(' '), /Missing the/);
+  const swapped = PR_OK.replace('### What', '### TEMP').replace('### Why', '### What').replace('### TEMP', '### Why');
+  assert.match(validatePrDescription(swapped).join(' '), /out of order/);
+  assert.match(validatePrDescription(PR_OK.replace('Several users asked for it because the bright screen is tiring to read at night.', 'TBD')).join(' '), /"### Why" is empty/);
+  assert.deepEqual(validatePrDescription(''), PR_SECTIONS.map((h) => `Missing the "${h}" heading.`));
+});
+
+test('pull request description: both diagrams are required and must be the right kind', () => {
+  const noSeq = PR_OK.replace('sequenceDiagram', 'flowchart LR');
+  assert.match(validatePrDescription(noSeq).join(' '), /must be a mermaid sequenceDiagram/);
+  assert.match(validatePrDescription(PR_OK.replace('flowchart LR', 'pie')).join(' '), /must be a mermaid flowchart/);
+  assert.match(validatePrDescription(PR_OK.replace(':::changed', '').replace(':::added', '')).join(' '), /marks nothing as added or changed/);
+  const noDiagram = PR_OK.replace(/## Component diagram[\s\S]*?## Sequence diagram/, '## Component diagram\n\nSee the code.\n\n## Sequence diagram');
+  assert.match(validatePrDescription(noDiagram).join(' '), /"## Component diagram" needs a mermaid code block/);
+});
+
+test('pull request description: every component diagram gets the same colours and one legend', () => {
+  const withOwnColours = PR_OK.replace('flowchart LR', 'flowchart LR\n  classDef added fill:#ff00ff');
+  const out = finishPrDescription(withOwnColours);
+  assert.ok(!out.includes('#ff00ff'), 'the builder cannot pick its own colours');
+  for (const cls of ['added', 'changed', 'unchanged']) assert.equal(out.split(`classDef ${cls} `).length, 2);
+  assert.equal(out.split('**Legend:**').length, 2);
+  assert.match(out, /green = newly added, amber = changed, grey = not changed/);
+  assert.equal(finishPrDescription(out), out, 'finishing twice changes nothing');
+  assert.deepEqual(validatePrDescription(out), []);
+  assert.ok(out.indexOf('## Summary') < out.indexOf('## Component diagram') && out.indexOf('**Legend:**') < out.indexOf('## Sequence diagram'));
+  assert.ok(!/classDef/.test(out.slice(out.indexOf('## Sequence diagram'))), 'the sequence diagram is left alone');
 });

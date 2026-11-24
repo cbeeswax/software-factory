@@ -162,6 +162,15 @@ By default the skills come from [addyosmani/agent-skills](https://github.com/add
 - before merging, when the job is high risk, touches protected paths (`migrations`, `billing`, `auth`, `.github`, and the factory itself), or the approver agent is unsure;
 - at random, for one in five jobs that would otherwise auto-merge, so that you keep reading a sample of what ships. Set `approval.auditRate` to change this, or `approval.autoMerge` to `false` to approve everything yourself.
 
+**Every pull request reads the same way.** The description is written for someone who has not seen the code, in a fixed order the gate enforces:
+
+1. **Summary** in plain words, as three separate parts: what changes, why, and how.
+2. **Component diagram**, colour coded: green for newly added, amber for changed, grey for not changed.
+3. **Sequence diagram** of the main flow.
+4. **Tests**: what was tested at a high level, followed by the checks the factory actually ran and their results.
+
+The builder writes it, the factory applies the same colours and legend to every diagram, a build without it does not pass the gate, and the reviewers and approver check that it matches the code. The risk, review history, builder notes, design and spec follow underneath, folded away.
+
 **Everything is written down.** Each job keeps its issue, intake, spec, build notes, gate results, every review, the approval decision and your feedback as Markdown in `factory/jobs/<id>/`, and posts its progress as comments on the GitHub issue. The pull request says plainly that agents wrote it and points at what a human should look at.
 
 ## Configuration

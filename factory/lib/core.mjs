@@ -493,3 +493,69 @@ export function renderLessons(lessons, cfg = DEFAULT_CONFIG) {
   if (lessons.length) lines.push('## All lessons', '', ...lessonLines([...lessons].sort((a, b) => b.seen - a.seen)));
   return lines.join('\n').trimEnd() + '\n';
 }
+
+// ---------------------------------------------------------------- pull request description
+
+// Every pull request the factory opens reads the same way, in this order.
+export const PR_SECTIONS = ['## Summary', '### What', '### Why', '### How', '## Component diagram', '## Sequence diagram', '## Tests'];
+
+const DIAGRAM_CLASSES = {
+  added: 'fill:#d1f5d9,stroke:#1a7f37,stroke-width:2px,color:#0b3d1a',
+  changed: 'fill:#fff1c2,stroke:#9a6700,stroke-width:2px,color:#4d3300',
+  unchanged: 'fill:#eaeef2,stroke:#8c959f,color:#24292f',
+};
+const DIAGRAM_LEGEND = '**Legend:** green = newly added, amber = changed, grey = not changed.';
+
+function sectionBody(text, heading) {
+  const start = text.indexOf(heading);
+  if (start < 0) return '';
+  const rest = text.slice(start + heading.length);
+  const next = rest.search(/\n##+ /);
+  return (next < 0 ? rest : rest.slice(0, next)).trim();
+}
+
+const mermaidBlocks = (body) => [...body.matchAll(/```mermaid\n([\s\S]*?)```/g)].map((m) => m[1]);
+
+/** What is wrong with a pull request description, as a list the builder can fix. Empty means valid. */
+export function validatePrDescription(text) {
+  const t = String(text || '').replace(/\r\n/g, '\n');
+  const problems = [];
+  let at = -1;
+  for (const h of PR_SECTIONS) {
+    const i = t.search(new RegExp(`^${h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'm'));
+    if (i < 0) { problems.push(`Missing the "${h}" heading.`); continue; }
+    if (i < at) problems.push(`"${h}" is out of order. The order is: ${PR_SECTIONS.join(', ')}.`);
+    at = Math.max(at, i);
+  }
+  if (problems.length) return problems;
+  for (const h of ['### What', '### Why', '### How', '## Tests']) {
+    if (sectionBody(t, h).replace(/[^A-Za-z]/g, '').length < 20) problems.push(`"${h}" is empty. Write it in plain words.`);
+  }
+  const comp = mermaidBlocks(sectionBody(t, '## Component diagram'))[0];
+  if (!comp) problems.push('"## Component diagram" needs a mermaid code block.');
+  else {
+    if (!/^\s*(flowchart|graph)\b/m.test(comp)) problems.push('The component diagram must be a mermaid flowchart.');
+    if (!/:::(added|changed)\b/.test(comp)) problems.push('The component diagram marks nothing as added or changed. Tag each component with :::added, :::changed or :::unchanged.');
+    if (!/:::unchanged\b/.test(comp)) problems.push('The component diagram shows no unchanged component. Include the existing parts the change connects to, tagged :::unchanged, so a reader sees where it fits.');
+  }
+  const seq = mermaidBlocks(sectionBody(t, '## Sequence diagram'))[0];
+  if (!seq) problems.push('"## Sequence diagram" needs a mermaid code block.');
+  else if (!/^\s*sequenceDiagram\b/m.test(seq)) problems.push('The sequence diagram must be a mermaid sequenceDiagram.');
+  return problems;
+}
+
+/** Gives every component diagram the same colours and legend, whatever the builder wrote. */
+export function finishPrDescription(text) {
+  const t = String(text || '').replace(/\r\n/g, '\n').trim();
+  const start = t.indexOf('## Component diagram');
+  const end = t.indexOf('## Sequence diagram');
+  if (start < 0 || end < start) return t;
+  const section = t.slice(start, end)
+    .replace(/```mermaid\n([\s\S]*?)```/, (_, body) => {
+      const kept = body.split('\n').filter((l) => !/^\s*classDef\s+(added|changed|unchanged)\b/.test(l)).join('\n').trimEnd();
+      const defs = Object.entries(DIAGRAM_CLASSES).map(([k, v]) => `  classDef ${k} ${v}`).join('\n');
+      return `\`\`\`mermaid\n${kept}\n${defs}\n\`\`\`\n\n${DIAGRAM_LEGEND}`;
+    })
+    .replace(new RegExp(`(\\n\\n${DIAGRAM_LEGEND.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})+`, 'g'), `\n\n${DIAGRAM_LEGEND}`);
+  return `${t.slice(0, start)}${section.trimEnd()}\n\n${t.slice(end)}`;
+}

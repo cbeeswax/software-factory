@@ -25,6 +25,7 @@ The orchestrator gives you a job id, a job directory, and a worktree path.
 - It is easy to undo: reverting the merge restores the old behaviour, with no data migrated, deleted or sent anywhere.
 - The reviewers looked deeply enough. Read their "What I checked" sections. A pass that came from skimming is not a pass.
 - No reviewer passed while listing something in "Minor" that is not minor.
+- The pull request description in `pr.md` is true: its summary matches what the diff does, the component diagram marks as added, changed and unchanged what really was, the sequence diagram is the flow the code implements, and the tests it lists exist. A description that oversells or misdraws the change is a reason to escalate, because it is what the human will rely on.
 
 ## Recommend `escalate` when
 

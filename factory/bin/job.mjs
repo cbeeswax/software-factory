@@ -5,8 +5,8 @@
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import {
-  LESSON_AGENTS, RISKS, SURFACES, TERMINAL, TYPES, addLesson, afterGrill, afterReviews, computeStats, decideApproval, formatDuration,
-  lessonsToPromote, markSeen, planJob, renderBrief, renderLessons, scanDiff, slugify, stageDurations, usageTotals,
+  LESSON_AGENTS, PR_SECTIONS, RISKS, SURFACES, TERMINAL, TYPES, addLesson, afterGrill, afterReviews, computeStats, decideApproval, formatDuration,
+  finishPrDescription, lessonsToPromote, markSeen, planJob, validatePrDescription, renderBrief, renderLessons, scanDiff, slugify, stageDurations, usageTotals,
 } from '../lib/core.mjs';
 import {
   GH_ENABLED, ROOT, gh, ghTry, git, gitTry, jobDir, jobFiles, listJobs, loadConfig, loadJob, loadLessons, saveJob, saveLessons, sh, writeJobFile,
@@ -307,6 +307,13 @@ commands.gate = ({ _ }) => {
     if (scan.blocking) problems.push('The slop and secrets scan found blocking problems (listed below). Fix the cause; do not suppress checks, skip tests, or commit credentials.');
   }
 
+  const prFile = join(jobDir(job.id), 'pr.md');
+  const prProblems = existsSync(prFile) ? validatePrDescription(readFileSync(prFile, 'utf8')) : [`pr.md is missing from ${jobDir(job.id)}.`];
+  if (prProblems.length) {
+    problems.push('The pull request description (pr.md in the job folder) is missing or not in the required format. Fix what is listed below.');
+    sections.push(`## Pull request description\n\nRequired headings, in this order: ${PR_SECTIONS.join(', ')}.\n\n${prProblems.map((p) => `- ${p}`).join('\n')}`);
+  }
+
   let checks = { results: [], pass: true, none: false };
   if (!problems.length) {
     checks = runChecks(wt, cfg);
@@ -322,6 +329,7 @@ commands.gate = ({ _ }) => {
   const head = `# Gate, round ${job.round}: ${pass ? 'PASS' : 'FAIL'}\n\nDiff: ${scan.stats.files} files, +${scan.stats.added} -${scan.stats.removed}.`;
   writeJobFile(job, `gate-${job.round}.md`, [head, pass ? '' : `## Must fix\n\n${problems.map((p) => `- ${p}`).join('\n')}`, ...sections].filter(Boolean).join('\n\n'));
 
+  job.lastGate = { round: job.round, stats: scan.stats, none: checks.none, checks: checks.results.map((r) => ({ name: r.name, cmd: r.cmd, pass: r.pass, ms: r.ms })) };
   if (pass) {
     job.verdicts[job.round] = {};
     transition(job, 'review');
@@ -340,23 +348,32 @@ commands.gate = ({ _ }) => {
 function prBody(job) {
   const dir = jobDir(job.id);
   const read = (f) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), 'utf8').trim() : '');
-  const rounds = Object.entries(job.verdicts).map(([round, v]) => `- Round ${round}: ${Object.entries(v).map(([n, x]) => `${n} ${x.verdict}`).join(', ')}`);
+  const rounds = Object.entries(job.verdicts).filter(([, v]) => Object.keys(v).length).map(([round, v]) => `- Round ${round}: ${Object.entries(v).map(([n, x]) => `${n} ${x.verdict}`).join(', ')}`);
   const spec = read('spec.md');
+  const gate = job.lastGate || { checks: [] };
+  const ran = gate.checks.length
+    ? gate.checks.map((c) => `| \`${c.cmd}\` | ${c.pass ? 'passed' : 'FAILED'} | ${formatDuration(c.ms)} |`)
+    : ['| (no checks configured) | - | - |'];
+  const fold = (title, body) => (body ? `<details><summary>${title}</summary>\n\n${body.length > 20000 ? `${body.slice(0, 20000)}\n\n(truncated)` : body}\n\n</details>` : '');
   return [
-    `Closes #${job.issue}`,
+    finishPrDescription(read('pr.md')),
+    `### Checks the factory ran\n\nThese ran on this exact commit before any reviewer saw it.\n\n| Check | Result | Time |\n|---|---|---|\n${ran.join('\n')}`,
+    `### Reviews\n\n${rounds.join('\n') || 'Reviews have not run yet.'}`,
+    '---',
+    job.issue ? `Closes #${job.issue}` : '',
     '> This pull request was written and reviewed by AI agents in the software factory. A human owns the decision to ship it.',
-    `**Risk:** ${job.risk} | **Surfaces:** ${job.surfaces.join(', ') || 'none'} | **Review rounds:** ${job.round} | **Gate failures:** ${job.gateFailures}`,
-    `## Reviews\n\n${rounds.join('\n')}`,
-    `## Builder notes\n\n${read(`build-${job.round}.md`) || '(none)'}`,
-    `<details><summary>Spec</summary>\n\n${spec.length > 20000 ? `${spec.slice(0, 20000)}\n\n(truncated)` : spec}\n\n</details>`,
-  ].join('\n\n');
+    `**Kind:** ${job.type} | **Risk:** ${job.risk} | **Touches:** ${job.surfaces.join(', ') || 'nothing flagged'} | **Review rounds:** ${job.round} | **Gate failures:** ${job.gateFailures}`,
+    fold('Builder notes', read(`build-${job.round}.md`)),
+    fold('Design', read('design.md')),
+    fold('Spec', spec),
+  ].filter(Boolean).join('\n\n');
 }
 
 function openPr(job) {
   if (!job.issue || !GH_ENABLED || !hasOrigin()) return;
   const push = gitTry(['push', '-u', 'origin', job.branch], job.worktree);
   if (!push.ok) throw new Error(`git push failed: ${push.err}`);
-  if (job.pr) return;
+  if (job.pr) { gh(['pr', 'edit', String(job.pr.number), '--body-file', '-'], { input: prBody(job) }); return; }
   const url = gh(['pr', 'create', '--head', job.branch, '--base', job.base, '--title', `${job.title} (#${job.issue})`, '--body-file', '-'], { input: prBody(job) }).split(/\r?\n/).pop();
   job.pr = { url, number: Number(url.split('/').pop()) };
 }
@@ -544,6 +561,16 @@ commands.stats = () => {
   say(JSON.stringify({ ...computeStats(listJobs()), lessons: lessons.length, lessonsToPromote: lessonsToPromote(lessons, cfg).map((l) => ({ id: l.id, seen: l.seen, text: l.text })) }, null, 2));
 };
 
+// Prints the pull request description exactly as it will be posted, for a human or an agent to check.
+commands['pr-preview'] = ({ _ }) => {
+  const job = loadJob(_[0]);
+  const file = join(jobDir(job.id), 'pr.md');
+  if (!existsSync(file)) fail(`pr.md is missing from ${jobDir(job.id)}.`);
+  const problems = validatePrDescription(readFileSync(file, 'utf8'));
+  if (problems.length) fail(`pr.md is not in the required format:\n${problems.map((p) => `  - ${p}`).join('\n')}`);
+  say(prBody(job));
+};
+
 commands.brief = ({ _ }) => { const job = loadJob(_[0]); say(renderBrief(job, loadLessons(), cfg)); };
 
 const csv = (v) => (v && v !== true ? String(v).split(',').map((s) => s.trim()).filter(Boolean) : []);
@@ -601,6 +628,7 @@ commands.help = () => say(`Factory job control. The only writer of factory/jobs/
   usage <job> --stage --model --tokens    Record token usage for cost tracking
   lesson add|seen|remove|list             The factory's memory of its own mistakes
   learned <job>                           The retro for a finished job is done
+  pr-preview <job>                        Check pr.md and print the pull request description as it will be posted
   brief <job>                             Print the job's brief: plan, approach, lessons that apply
   next <job> | status [job] | list | stats`);
 

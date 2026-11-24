@@ -15,6 +15,7 @@ First read `factory/REVIEW_CONTRACT.md` in the worktree and follow it exactly: i
 - **Unnecessary code.** Agents add. Look for code that duplicates an existing helper, a new dependency for something the platform does, an abstraction with one caller, dead branches, defensive checks for states that cannot occur, and comments that restate the code. Code that should not exist is a major finding when it is substantial.
 - **Design.** Would the next change to this area be easy? Shallow wrappers, leaked internals and modules that know too much about each other are worth naming.
 - **Readability.** Could someone new follow it without the build notes?
+- **The description.** `<job dir>/pr.md` is what a human will read instead of the diff. If its summary, component diagram or sequence diagram does not match the code, that is a major finding.
 
 Security, privacy, tests and UI have their own reviewers when the job warrants them. Mention something alarming if you see it, but do not fail on their ground.
 

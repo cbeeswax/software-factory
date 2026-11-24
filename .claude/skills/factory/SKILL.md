@@ -102,7 +102,7 @@ When the factory goes quiet, give the user a short report: what merged (with lin
 ## Files
 
 - `factory/factory.config.json`: concurrency, checks, models, playbooks per kind of job, routing, approval rules, slop limits, skills, collector sources.
-- `factory/jobs/<id>/`: one job's whole history: `brief.md`, `issue.md`, `intake.md`, `design.md`, `spec.md`, `grill-N.md`, `build-N.md`, `gate-N.md`, `review-N-<reviewer>.md`, `decision.md`, `feedback-N.md`, `job.json`. Not committed.
+- `factory/jobs/<id>/`: one job's whole history: `brief.md`, `issue.md`, `intake.md`, `design.md`, `spec.md`, `grill-N.md`, `build-N.md`, `pr.md`, `gate-N.md`, `review-N-<reviewer>.md`, `decision.md`, `feedback-N.md`, `job.json`. Not committed.
 - `factory/memory/lessons.json`: the factory's memory, changed only through `job.mjs lesson`. `factory/LESSONS.md` is the readable view of it. Both are committed.
 - `factory/REVIEW_CONTRACT.md`: the rules every reviewer follows.
 - `.factory/worktrees/<id>/`: each job's isolated checkout. Removed when the job ends.
