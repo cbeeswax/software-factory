@@ -2,9 +2,16 @@
   "name": "software-factory",
   "version": "0.1.0",
   "description": "An agentic software factory for Claude Code: GitHub issues in, reviewed pull requests out.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cbeeswax/software-factory.git"
+  },
   "private": true,
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "test": "node --test test/",
     "dashboard": "node factory/dashboard/server.mjs",

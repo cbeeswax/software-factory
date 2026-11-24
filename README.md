@@ -286,3 +286,7 @@ npm test
 ```
 
 `test/core.test.mjs` covers the decision logic. `test/job.test.mjs` runs whole job lifecycles against throwaway git repositories with GitHub turned off, and fails if the Copilot agent copies are stale. After editing an agent in `.claude/agents`, run `node factory/bin/sync-agents.mjs`.
+
+## License
+
+[MIT](LICENSE)
